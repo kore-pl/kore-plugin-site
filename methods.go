@@ -40,6 +40,22 @@ func dispatch(request *pluginapi.Request, cfg config, logger *slog.Logger) (*plu
 	case "kore.reload":
 		response.Result = json.RawMessage(`{"ok":true,"config_digest":""}`)
 		return response, false
+	case cfg.id + ".config.get", "config.get":
+		result, perr := handleConfigGet()
+		if perr != nil {
+			response.Error = perr
+			return response, false
+		}
+		response.Result = encode(result)
+		return response, false
+	case cfg.id + ".config.set", "config.set":
+		result, perr := handleConfigSet(request.Params)
+		if perr != nil {
+			response.Error = perr
+			return response, false
+		}
+		response.Result = encode(result)
+		return response, false
 	}
 	verb, ok := businessVerb(request.Method, cfg.id)
 	if !ok {

@@ -8,7 +8,7 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 - **建站链路**：原子写独立 `conf.d/kore-site-<domain>.conf` → `nginx -t` 校验（失败回滚并回 `E_INVALID`）→ `nginx -s reload`（失败回 `E_UPSTREAM`，明确"已写入但未生效"）。
 - 不碰宿主 nginx 主配置（`nginx.conf`）；只写独立 vhost 片段，由宿主既有的 `conf.d/*.conf` include 引入。
 - 不使用 `default_server`；`default_server=true` 的创建请求直接回 `E_INVALID`（红队 R6）。
-- **不内置、不捆绑** nginx/caddy/httpd 二进制（裁决37）：命令默认调用宿主已安装的 nginx，可通过环境变量指向容器内执行。
+- **不内置、不捆绑** nginx/caddy/httpd 二进制（裁决37）：`nginx_mode=auto` 先找宿主 `nginx`，找不到再找运行中的 nginx 容器并改用 `docker exec`；也可强制 `host` / `docker` / `off`。
 
 ## 方法表
 
@@ -29,9 +29,15 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | `site.unsetRedirect` / `unsetRedirect` | 按 `from_path` 删除重定向（不存在时幂等）。 |
 | `site.disable` / `site.enable` | 把 vhost 改名为 `.conf.disabled` / 改回 `.conf` 后 test+reload；配置不删。 |
 | `site.setIndex` / `setIndex` | 设置 `index` 指令，默认 `index.html index.htm index.php`。 |
+| `site.config.get` / `config.get` | 返回 4 个配置项的 schema、当前值与来源（`file` / `env` / `default`）。只读。 |
+| `site.config.set` / `config.set` | 校验 → 原子写 `<KORE_STATE_DIR>/config.json`（0600）→ 下一次调用立即生效（`restart_required=false`）。 |
 | `kore.ping` / `kore.reload` / `kore.shutdown` | 协议必选方法；`kore.reload` 无外部配置，`config_digest` 为空。 |
 
-**三态口径**：`test_skipped=true` / `reload_skipped=true` 表示本机没有可用的 nginx（未配置或 `KORE_NGINX_*_CMD=off` 显式关闭），此时 `test_passed=false` **不代表站点故障**；只有 `test_passed=false && !test_skipped` 才是真的 `nginx -t` 失败，并附 `test_output` 摘要。
+**三态口径**：`test_skipped=true` / `reload_skipped=true` 表示本机没有可用的 nginx（auto 探测落空或 `KORE_NGINX_*_CMD=off` 显式关闭），此时 `test_passed=false` **不代表站点故障**；只有 `test_passed=false && !test_skipped` 才是真的 `nginx -t` 失败，并附 `test_output` 摘要。
+
+所有写操作与 `list` / `status` 结果都带 `nginx_mode`（`host` / `docker` / `off`）与 `nginx_reason`（跳过原因）。真实探测落空时 `nginx_reason="未检测到 nginx（宿主与容器都没有）"`，前端可据此把「未检测」渲染成「为什么没检测」，而不是一个灰点。
+
+**已知限制**：容器模式下 `site.status.site_dir_exists` 仍只检查**宿主**路径（vhost 里的 `root` 是容器内路径）。要确认容器内站点目录，用 `docker exec <container> test -d <root>`；插件不在只读方法里额外执行容器命令。
 
 `domain` 约束：小写、每个标签以字母数字开头结尾、至少两个标签、总长 ≤ 253；拒绝路径分隔符与 `..`，防止 vhost 路径穿越。
 `root` 约束：绝对路径、无冗余分量、仅允许 `A-Za-z0-9._/@+-`，拒绝空白/分号/花括号/换行等配置注入字符。
@@ -60,10 +66,14 @@ L2 配置的**唯一事实来源就是 vhost 文件本身**：受管片段用注
 
 ## 命令执行安全
 
-- 命令前缀来自 `KORE_NGINX_TEST_CMD` / `KORE_NGINX_RELOAD_CMD` / `KORE_NGINX_DUMP_CMD`，按 shell-like 规则切分为 argv，**不经过 `/bin/sh`**。
-- 操作旗标由插件固定注入：校验 `-t`、重载 `-s reload`、转储 `-T`；前缀自带 `-t`/`-T`/`-s` 会被判配置非法。
+- **host 模式**：命令前缀来自 `KORE_NGINX_TEST_CMD` / `KORE_NGINX_RELOAD_CMD` / `KORE_NGINX_DUMP_CMD`，按 shell-like 规则切分为 argv，**不经过 `/bin/sh`**；未配置时默认 `nginx`。
+- **docker 模式**：argv 固定为 `["docker","exec",<container>,"nginx"]` + 插件注入的操作旗标（`-t` / `-s reload` / `-T`），容器名是独立 argv，不拼进任何 shell 字符串。
+- 容器名硬校验 `^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`，拒绝 `../`、空白、分号、`$()` 等注入面；`config.set` 阶段即回 `E_INVALID`。
+- 操作旗标由插件固定注入：校验 `-t`、重载 `-s reload`、转储 `-T`；host 前缀自带 `-t`/`-T`/`-s` 会被判配置非法。
 - RPC 入参（`domain` / `root` / `port`）只参与文件路径与已校验的模板，**永不进入 argv**。
-- 每条命令有 20s 超时；进入错误消息的输出截断到 4096 字符。
+- 每条命令（含 `docker exec` / `docker inspect`）都有 20s 超时；进入错误消息的输出截断到 4096 字符。
+- **写路径前置校验**（仅 docker 模式）：宿主 `host_conf_dir` 必须存在且可写 → 容器必须存在（`docker inspect` 失败回 `E_UPSTREAM`）→ 容器内 `docker_conf_dir` 必须确实由该宿主目录挂载而来（否则 `E_INVALID` 并给出应改成的路径）。这样不会出现「配置写成功但容器读不到」的假生效。
+- 只读方法（`list` / `status`）不做额外 `docker inspect`：容器不存在时由 `nginx -t` 的真实失败出现在 `test_output` 里（不是静默 skipped），不因一次查看而放大容器调用。
 
 ## 环境变量
 
@@ -73,19 +83,30 @@ L2 配置的**唯一事实来源就是 vhost 文件本身**：受管片段用注
 | `KORE_PLUGIN_ID` | 否 | 内核登记 id，缺省取内嵌 `info.json.id` |
 | `KORE_PLUGIN_TOKEN` | 否 | 内核注入令牌；当前只随 `kore.hello` 上报 |
 | `KORE_LOG_LEVEL` | 否 | `debug`/`info`/`warn`/`error`，缺省 `warn`；日志只写 stderr |
-| `KORE_SITE_CONF_DIR` | 否 | conf.d 目录，缺省 `/etc/nginx/conf.d`；测试与自定义布局用 |
-| `KORE_NGINX_TEST_CMD` | 否 | 校验命令前缀，缺省 `nginx`（实际执行 `nginx -t`）；`off` 显式跳过校验 |
-| `KORE_NGINX_RELOAD_CMD` | 否 | 重载命令前缀，缺省 `nginx`（实际执行 `nginx -s reload`）；`off` 显式跳过重载 |
-| `KORE_NGINX_DUMP_CMD` | 否 | 转储命令前缀，缺省由校验前缀推导并补 `-T`；`off` 显式跳过加载检测 |
+| `KORE_NGINX_MODE` | 否 | `auto`/`host`/`docker`/`off`，缺省 `auto`；对应 `config.json.nginx_mode` |
+| `KORE_DOCKER_CONTAINER` | 否 | 容器名，对应 `docker_container`；`docker` 模式必填 |
+| `KORE_DOCKER_CONF_DIR` | 否 | 容器内 conf.d 路径，缺省 `/etc/nginx/conf.d`；对应 `docker_conf_dir` |
+| `KORE_HOST_CONF_DIR` | 否 | 宿主 conf.d 路径，缺省 `/etc/nginx/conf.d`；对应 `host_conf_dir` |
+| `KORE_SITE_CONF_DIR` | 否 | `KORE_HOST_CONF_DIR` 的历史别名（测试与自定义布局用） |
+| `KORE_NGINX_TEST_CMD` | 否 | host 模式校验命令前缀，缺省 `nginx`（实际执行 `nginx -t`）；`off` 显式跳过校验 |
+| `KORE_NGINX_RELOAD_CMD` | 否 | host 模式重载命令前缀，缺省 `nginx`（实际执行 `nginx -s reload`）；`off` 显式跳过重载 |
+| `KORE_NGINX_DUMP_CMD` | 否 | host 模式转储命令前缀，缺省由校验前缀推导并补 `-T`；`off` 显式跳过加载检测 |
 
-容器联调示例：
+配置优先级：`<KORE_STATE_DIR>/config.json` > 环境变量 > 代码默认值。`config.json` 由 `site.config.set` 写入（0600、原子替换），保存后下一次方法调用立即生效，无需重启插件；显式给了 `nginx_mode` 时它优先于 `KORE_NGINX_*_CMD`（auto 模式下显式命令前缀仍优先，保证老部署升级后行为不变）。
+
+容器模式示例（容器把宿主 `/tmp/kore-site-cnf` 挂到 `/etc/nginx/conf.d`）：
 
 ```bash
-KORE_NGINX_TEST_CMD="docker exec kore-site-test nginx -t" \
-KORE_NGINX_RELOAD_CMD="docker exec kore-site-test nginx -s reload" \
-KORE_SITE_CONF_DIR=/tmp/conf.d \
+docker run -d --name kore-nginx -p 18082:80 \
+  -v /tmp/kore-site-cnf:/etc/nginx/conf.d:ro nginx:alpine
+
+KORE_NGINX_MODE=docker \
+KORE_DOCKER_CONTAINER=kore-nginx \
+KORE_HOST_CONF_DIR=/tmp/kore-site-cnf \
 ./bin/site
 ```
+
+等价地通过 `site.config.set` 保存（`{"values":{"nginx_mode":"docker","docker_container":"kore-nginx","docker_conf_dir":"/etc/nginx/conf.d","host_conf_dir":"/tmp/kore-site-cnf"}}`），保存后立即生效。不配 `docker_container` 时也可用 `nginx_mode=auto` 自动挑运行中的 nginx 容器。
 
 `stdout` 只留给协议帧，任何日志都不得写 stdout。
 
@@ -101,7 +122,10 @@ make check   # gofmt → go vet → go test -timeout 200s
 
 docker 端到端（真实 nginx:alpine）：`TestDockerNginxLifecycle` 覆盖 v1 四步生命周期，
 `TestDockerNginxL2` 覆盖 L2 六步（create+bindSSL 的 https 200 / http 301 → wordpress 伪静态 →
-反代命中容器内 `127.0.0.1:18990` 后端 → `/old` 302 → disable 后不再命中、enable 恢复 → index 指令）：
+反代命中容器内 `127.0.0.1:18990` 后端 → `/old` 302 → disable 后不再命中、enable 恢复 → index 指令），
+`TestDockerContainerMode` 覆盖容器模式（`config.set` 配 docker → create 后 curl 200 + `nginx -T` 命中 →
+坏 conf 时 status `test_passed=false` 且插件回滚、真实 `nginx -t` 仍通过 → delete 后 curl 不再命中且
+`nginx -T` 已卸载 → 注入式容器名被拒）：
 
 ```bash
 go test -tags e2e -timeout 300s -v ./tests/e2e
@@ -115,5 +139,6 @@ L2 反代后端是 `tests/e2e/testdata/backend`（`CGO_ENABLED=0` 静态二进�
 ## 明确不做
 
 - 不写宿主 `nginx.conf`、不注入 include、不抢 `default_server`。
-- 不内置/捆绑任何 web server 二进制，不自动安装 nginx。
+- 不内置/捆绑任何 web server 二进制，不自动安装 nginx、不自动拉起容器。
+- 不管理容器的生命周期（不负责 `docker run` / 重启 / 删除），只通过 `docker exec` 使用已运行的容器。
 - 不做证书签发/续期、DNS、防火墙等站点外资源编排：SSL 只引用运维已提供的证书路径。

@@ -26,6 +26,25 @@
 
 ## [Unreleased]
 
+### 新增（容器内 nginx）
+
+- 新增 `nginx_mode`（`auto|host|docker|off`，默认 `auto`）：auto 先找宿主 `nginx` 命令，找不到再用
+  `docker ps` 挑镜像名含 nginx 的运行中容器，都没有则 `off` 并在 `nginx_reason` 明确写出
+  「未检测到 nginx（宿主与容器都没有）」，不再静默 `test_skipped`。
+- docker 模式命令固定 argv：`["docker","exec",<container>,"nginx"]` + `-t` / `-s reload` / `-T`；
+  容器名硬校验 `^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`，不经过 shell；命令超时 20s。
+- 新增配置契约 `site.config.get` / `site.config.set`：`nginx_mode` / `docker_container` /
+  `docker_conf_dir` / `host_conf_dir` 四项写入 `<KORE_STATE_DIR>/config.json`（0600、原子替换），
+  保存后下一次调用立即生效（`restart_required=false`）；环境变量 `KORE_NGINX_MODE` 等作为兼容入口。
+- 写路径前置校验（docker 模式）：宿主 `host_conf_dir` 存在且可写（否则 `E_INVALID` + 挂载提示）→
+  容器存在（`docker inspect` 失败回 `E_UPSTREAM`）→ 容器内 `docker_conf_dir` 必须确实由该宿主目录
+  挂载而来（`-v /etc/nginx:/etc/nginx` 这类父目录挂载按最长前缀匹配），避免「写成功但容器读不到」。
+- 所有写操作与 `list` / `status` 结果新增 `nginx_mode` / `nginx_reason`，前端可把「未检测」渲染成原因。
+- 新增真实容器 E2E `TestDockerContainerMode`：`config.set` 配 docker → create 后
+  `curl Host: ct.kore.test` 返回 200 + 标记、`nginx -T` 命中 server_name → 坏 conf 时
+  `status.test_passed=false` 且插件回滚、真实 `nginx -t` 仍通过 → delete 后 curl 不再命中、`nginx -T` 已卸载 →
+  `docker_container="../../etc"` 被 `E_INVALID` 拒绝。
+
 ### 新增（L2 可用）
 
 - 站点配置以 vhost 注释标记块为唯一事实来源：解析（`parse.go`）↔ 渲染（`render.go`）互为逆运算，

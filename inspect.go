@@ -16,7 +16,7 @@ func (s *siteService) list() (siteListResult, *pluginapi.Error) {
 		return siteListResult{}, perr
 	}
 	if len(sites) == 0 {
-		return siteListResult{Sites: sites, Count: 0, Applied: true}, nil
+		return siteListResult{nginxStatus: s.runner.status(), Sites: sites, Count: 0, Applied: true}, nil
 	}
 	testOutcome := s.runner.runTest()
 	dumpOutcome := s.runner.runDump()
@@ -44,7 +44,7 @@ func (s *siteService) list() (siteListResult, *pluginapi.Error) {
 		}
 	}
 	applied := testOK && allExists && (!dumpOutcome.ran || allLoaded)
-	return siteListResult{Sites: sites, Count: len(sites), Applied: applied}, nil
+	return siteListResult{nginxStatus: s.runner.status(), Sites: sites, Count: len(sites), Applied: applied}, nil
 }
 
 // status 检查单站点四个独立信号，不修改任何文件、不触发 reload。
@@ -54,7 +54,10 @@ func (s *siteService) status(domain string) (siteStatusResult, *pluginapi.Error)
 		return siteStatusResult{}, perr
 	}
 	path := vhostPath(domain)
-	result := siteStatusResult{Domain: domain, VHostPath: path, Managed: manifest.Sites[domain] == path}
+	result := siteStatusResult{
+		nginxStatus: s.runner.status(), Domain: domain, VHostPath: path,
+		Managed: manifest.Sites[domain] == path,
+	}
 
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

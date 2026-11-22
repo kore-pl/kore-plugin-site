@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/pengtang1024/kore/pkg/pluginapi"
 )
 
 // nginx 命令层的唯一职责：把"配置校验 / 热重载 / 已加载配置转储"变成
@@ -48,29 +46,20 @@ func (c commandSpec) argv(fixed ...string) []string {
 	return append(out, fixed...)
 }
 
-// nginxRunner 持有三类命令的解析结果。
+// nginxRunner 持有三类命令的解析结果与实际生效模式。
+// mode ∈ host/docker/off；reason 只在跳过（off 或显式关闭）时说明原因。
 type nginxRunner struct {
-	test   commandSpec
-	reload commandSpec
-	dump   commandSpec
+	test      commandSpec
+	reload    commandSpec
+	dump      commandSpec
+	mode      string
+	reason    string
+	container string
 }
 
-// loadNginxRunner 从环境变量解析命令前缀；配置非法时返回 E_INTERNAL。
-// 单测/故障注入可通过 KORE_NGINX_TEST_CMD=off 显式关闭对应环节。
-func loadNginxRunner() (*nginxRunner, *pluginapi.Error) {
-	testSpec, err := commandSpecFromEnv(nginxTestCmdEnv, defaultNginxPrefix, "-t")
-	if err != nil {
-		return nil, internalErr(err.Error())
-	}
-	reloadSpec, err := commandSpecFromEnv(nginxReloadCmdEnv, defaultNginxPrefix, "-s", "reload")
-	if err != nil {
-		return nil, internalErr(err.Error())
-	}
-	dumpSpec, err := dumpSpecFromEnv(testSpec, reloadSpec)
-	if err != nil {
-		return nil, internalErr(err.Error())
-	}
-	return &nginxRunner{test: testSpec, reload: reloadSpec, dump: dumpSpec}, nil
+// status 返回结果里统一披露的命令层模式与跳过原因。
+func (r *nginxRunner) status() nginxStatus {
+	return nginxStatus{NginxMode: r.mode, NginxReason: r.reason}
 }
 
 // dumpSpecFromEnv 解析 KORE_NGINX_DUMP_CMD；未显式配置时复用校验前缀并补 -T。

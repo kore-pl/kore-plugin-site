@@ -28,8 +28,17 @@ type siteInfo struct {
 	TestOutput string `json:"test_output,omitempty"`
 }
 
+// nginxStatus 是所有业务结果统一披露的命令层模式：
+// mode ∈ host/docker/off，reason 只在跳过（off 或显式关闭）时说明原因，
+// 让前端能把「未检测」渲染成「为什么没检测」而不是一个灰点。
+type nginxStatus struct {
+	NginxMode   string `json:"nginx_mode"`
+	NginxReason string `json:"nginx_reason,omitempty"`
+}
+
 // siteListResult 是 site.list 的结果。
 type siteListResult struct {
+	nginxStatus
 	Sites   []siteInfo `json:"sites"`
 	Count   int        `json:"count"`
 	Applied bool       `json:"applied"`
@@ -38,6 +47,7 @@ type siteListResult struct {
 // siteCreateResult 描述 site.create 的实际落盘与生效结果。
 // Applied 表示写入后校验/重载均未失败（任一环节被显式关闭时由对应 skipped 标记说明）。
 type siteCreateResult struct {
+	nginxStatus
 	Domain        string `json:"domain"`
 	VHostPath     string `json:"vhost_path"`
 	DefaultServer bool   `json:"default_server"`
@@ -52,6 +62,7 @@ type siteCreateResult struct {
 
 // siteDeleteResult 描述 site.delete 的实际删除与生效结果。
 type siteDeleteResult struct {
+	nginxStatus
 	Domain        string `json:"domain"`
 	VHostPath     string `json:"vhost_path"`
 	Applied       bool   `json:"applied"`
@@ -66,6 +77,7 @@ type siteDeleteResult struct {
 // siteStatusResult 是 site.status 的结果：conf/测试/目录/加载四个独立信号，
 // 让调用方一眼看出"是文件没写、配置不合法、目录缺失，还是没被 nginx 加载"。
 type siteStatusResult struct {
+	nginxStatus
 	Domain        string `json:"domain"`
 	VHostPath     string `json:"vhost_path"`
 	Managed       bool   `json:"managed"`
@@ -126,8 +138,12 @@ const (
 	defaultPort = 80
 )
 
-// vhostDir 返回当前插件使用的 conf.d 目录。
+// vhostDir 返回当前插件使用的 conf.d 目录（config.json > 环境变量 > 默认值）。
+// 配置解析失败时回落到历史环境变量：调用方在 newSiteService 已先报出配置错误。
 func vhostDir() string {
+	if settings, _, err := loadPluginSettings(); err == nil {
+		return settings.HostConfDir
+	}
 	if dir := os.Getenv(vhostDirEnv); dir != "" {
 		return dir
 	}

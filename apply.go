@@ -18,19 +18,28 @@ import (
 type siteService struct {
 	store  *vhostStore
 	runner *nginxRunner
+	// settings 是本次调用生效的配置（auto 探测到容器时已回填 container）。
+	settings pluginSettings
 }
 
 // newSiteService 用当前环境解析 conf.d 与 nginx 命令配置。
 func newSiteService() (*siteService, *pluginapi.Error) {
-	runner, perr := loadNginxRunner()
-	if perr != nil {
-		return nil, perr
+	settings, _, err := loadPluginSettings()
+	if err != nil {
+		return nil, internalErr("插件配置非法: " + err.Error())
 	}
-	return &siteService{store: newVHostStore(), runner: runner}, nil
+	runner, effective, err := buildRunner(settings)
+	if err != nil {
+		return nil, internalErr(err.Error())
+	}
+	return &siteService{store: newVHostStore(), runner: runner, settings: effective}, nil
 }
 
 // create 执行完整建站链路并返回真实生效状态。
 func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) {
+	if perr := s.preflightWrite(); perr != nil {
+		return siteCreateResult{}, perr
+	}
 	confBefore, err := snapshotFile(vhostPath(p.Domain))
 	if err != nil {
 		return siteCreateResult{}, internalErr("读取 vhost 原状态失败: " + err.Error())
@@ -65,6 +74,7 @@ func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) 
 	}
 
 	return siteCreateResult{
+		nginxStatus:   s.runner.status(),
 		Domain:        p.Domain,
 		VHostPath:     path,
 		DefaultServer: false,
@@ -80,6 +90,9 @@ func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) 
 
 // delete 删除 vhost 后重新校验并重载；任一失败都恢复删除前状态。
 func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error) {
+	if perr := s.preflightWrite(); perr != nil {
+		return siteDeleteResult{}, perr
+	}
 	confBefore, err := snapshotFile(vhostPath(domain))
 	if err != nil {
 		return siteDeleteResult{}, internalErr("读取 vhost 原状态失败: " + err.Error())
@@ -96,7 +109,8 @@ func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error)
 	if !deleted {
 		// 幂等：没有可删的托管站点，不改配置自然也不需要 reload。
 		return siteDeleteResult{
-			Domain: domain, VHostPath: path, Applied: true, Deleted: false,
+			nginxStatus: s.runner.status(),
+			Domain:      domain, VHostPath: path, Applied: true, Deleted: false,
 			TestSkipped: true, ReloadSkipped: true,
 		}, nil
 	}
@@ -123,6 +137,7 @@ func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error)
 	}
 
 	return siteDeleteResult{
+		nginxStatus:   s.runner.status(),
 		Domain:        domain,
 		VHostPath:     path,
 		Applied:       true,

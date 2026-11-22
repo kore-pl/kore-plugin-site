@@ -16,6 +16,7 @@ var editMu sync.Mutex
 
 // applyResult 是 L2 所有写方法共用的结果字段（被各结果结构体内嵌提升）。
 type applyResult struct {
+	nginxStatus
 	Domain        string `json:"domain"`
 	VHostPath     string `json:"vhost_path"`
 	Changed       bool   `json:"changed"`
@@ -56,12 +57,15 @@ func (s *siteService) applyEdit(domain string, mutate func(*siteState) *pluginap
 		return applyResult{}, st, internalErr("生成的 vhost 含 default_server，拒绝落盘")
 	}
 
-	result := applyResult{Domain: domain, VHostPath: path}
+	result := applyResult{nginxStatus: s.runner.status(), Domain: domain, VHostPath: path}
 	if string(content) == string(snap.data) {
 		result.Applied, result.TestSkipped, result.ReloadSkipped = true, true, true
 		return result, st, nil
 	}
 
+	if perr := s.preflightWrite(); perr != nil {
+		return applyResult{}, st, perr
+	}
 	backup, perr := s.writeBackup(domain, snap.data)
 	if perr != nil {
 		return applyResult{}, st, perr

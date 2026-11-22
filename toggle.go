@@ -11,6 +11,7 @@ import (
 // siteToggleResult 是 site.disable / site.enable 的结果。
 // 启停不做删除：只把 vhost 改名成 .conf.disabled，配置与备份全部保留。
 type siteToggleResult struct {
+	nginxStatus
 	Domain        string `json:"domain"`
 	VHostPath     string `json:"vhost_path"`
 	DisabledPath  string `json:"disabled_path"`
@@ -70,7 +71,10 @@ func (s *siteService) toggle(domain string, enable bool) (siteToggleResult, *plu
 	if enable {
 		from, to = disabledPath, path
 	}
-	result := siteToggleResult{Domain: domain, VHostPath: path, DisabledPath: disabledPath, Enabled: enable}
+	result := siteToggleResult{
+		nginxStatus: s.runner.status(), Domain: domain, VHostPath: path,
+		DisabledPath: disabledPath, Enabled: enable,
+	}
 	if _, err := os.Stat(from); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return siteToggleResult{}, internalErr("读取 vhost 失败: " + err.Error())
@@ -83,6 +87,9 @@ func (s *siteService) toggle(domain string, enable bool) (siteToggleResult, *plu
 		return siteToggleResult{}, &pluginapi.Error{Code: pluginapi.E_NOTFOUND, Message: "站点配置不存在：" + domain}
 	}
 
+	if perr := s.preflightWrite(); perr != nil {
+		return siteToggleResult{}, perr
+	}
 	if err := os.Rename(from, to); err != nil {
 		return siteToggleResult{}, internalErr("重命名 vhost 失败: " + err.Error())
 	}
