@@ -4,14 +4,20 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// siteInfo 是站点列表中的单条记录。
+// siteInfo 是站点列表中的单条记录：exists/test_ok/reloaded 是真实状态，
+// 不是"插件写过了"的乐观值。test_ok 来自一次 nginx -t，reloaded 来自
+// nginx -T 里是否出现该域名的 server_name。
 type siteInfo struct {
 	Domain    string `json:"domain"`
 	VHostPath string `json:"vhost_path"`
 	Enabled   bool   `json:"enabled"`
+	Exists    bool   `json:"exists"`
+	TestOK    bool   `json:"test_ok"`
+	Reloaded  bool   `json:"reloaded"`
 }
 
 // siteListResult 是 site.list 的结果。
@@ -21,22 +27,47 @@ type siteListResult struct {
 	Applied bool       `json:"applied"`
 }
 
-// siteCreateResult 描述 site.create 的实际落盘结果。
+// siteCreateResult 描述 site.create 的实际落盘与生效结果。
+// Applied 表示写入后校验/重载均未失败（任一环节被显式关闭时由对应 skipped 标记说明）。
 type siteCreateResult struct {
 	Domain        string `json:"domain"`
 	VHostPath     string `json:"vhost_path"`
 	DefaultServer bool   `json:"default_server"`
+	TestPassed    bool   `json:"test_passed"`
+	Reloaded      bool   `json:"reloaded"`
 	Applied       bool   `json:"applied"`
 	BackupPath    string `json:"backup_path,omitempty"`
 	Created       bool   `json:"created"`
+	TestSkipped   bool   `json:"test_skipped,omitempty"`
+	ReloadSkipped bool   `json:"reload_skipped,omitempty"`
 }
 
-// siteDeleteResult 描述 site.delete 的实际落盘结果。
+// siteDeleteResult 描述 site.delete 的实际删除与生效结果。
 type siteDeleteResult struct {
-	Domain    string `json:"domain"`
-	VHostPath string `json:"vhost_path"`
-	Applied   bool   `json:"applied"`
-	Deleted   bool   `json:"deleted"`
+	Domain        string `json:"domain"`
+	VHostPath     string `json:"vhost_path"`
+	Applied       bool   `json:"applied"`
+	Deleted       bool   `json:"deleted"`
+	BackupPath    string `json:"backup_path,omitempty"`
+	TestPassed    bool   `json:"test_passed"`
+	Reloaded      bool   `json:"reloaded"`
+	TestSkipped   bool   `json:"test_skipped,omitempty"`
+	ReloadSkipped bool   `json:"reload_skipped,omitempty"`
+}
+
+// siteStatusResult 是 site.status 的结果：conf/测试/目录/加载四个独立信号，
+// 让调用方一眼看出"是文件没写、配置不合法、目录缺失，还是没被 nginx 加载"。
+type siteStatusResult struct {
+	Domain        string `json:"domain"`
+	VHostPath     string `json:"vhost_path"`
+	Managed       bool   `json:"managed"`
+	ConfExists    bool   `json:"conf_exists"`
+	TestPassed    bool   `json:"test_passed"`
+	TestSkipped   bool   `json:"test_skipped,omitempty"`
+	TestOutput    string `json:"test_output,omitempty"`
+	SiteDirExists bool   `json:"site_dir_exists"`
+	Loaded        bool   `json:"loaded"`
+	LoadChecked   bool   `json:"load_checked"`
 }
 
 // siteParams 是站点方法的入参。DefaultServer 仅用于识别并拒绝抢占默认站点；
@@ -117,6 +148,20 @@ func vhostTemplate(domain, root string, port int) []byte {
 		"        try_files $uri $uri/ =404;\n" +
 		"    }\n" +
 		"}\n")
+}
+
+// parseRootDirective 从已落盘 vhost 中读 root 指令，供 site.status 判断站点目录。
+// 只认行首 root 指令，注释与 location 内的同名文本不会误命中。
+func parseRootDirective(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "root ") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, "root "))
+		return strings.TrimSuffix(value, ";")
+	}
+	return ""
 }
 
 // itoa 把 1..65535 的端口转成十进制字符串（标准库 strconv 的薄封装在此避免

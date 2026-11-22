@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pengtang1024/kore/pkg/pluginapi"
 )
+
+// rootPathRE 约束站点根目录字符集：root 会直接写进 nginx 配置，
+// 只允许路径安全字符，拒绝空白、分号、花括号与换行等配置注入面。
+var rootPathRE = regexp.MustCompile(`^/[A-Za-z0-9._/@+-]*$`)
 
 // vhostStore 封装 conf.d 目录下的独立 vhost 片段与生成清单。
 // 所有写操作遵循：先写 .tmp → fsync → rename（同目录原子替换）；
@@ -134,8 +139,8 @@ func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Erro
 	if port < 1 || port > 65535 {
 		return "", "", false, invalidParam("port 必须在 1..65535")
 	}
-	if root != filepath.Clean(root) || !filepath.IsAbs(root) {
-		return "", "", false, invalidParam("root 必须是绝对路径且不含冗余分量")
+	if err := validateRootPath(root); err != nil {
+		return "", "", false, invalidParam("root 非法: " + err.Error())
 	}
 
 	m, perr := s.loadManifest()
@@ -201,30 +206,49 @@ func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Erro
 
 // delete 只删除清单内、路径校验通过的 vhost 片段；不存在返回 deleted=false。
 func (s *vhostStore) delete(domain string) (string, bool, *pluginapi.Error) {
+	path, _, deleted, perr := s.deleteWithBackup(domain)
+	return path, deleted, perr
+}
+
+// deleteWithBackup 在删除前把原片段备份到同目录（非 .conf 后缀，不会被 include），
+// 供校验/重载失败时回滚，也留下可审计的删除记录。
+// 返回 (路径, 备份路径, 是否真的删除, error)。
+func (s *vhostStore) deleteWithBackup(domain string) (string, string, bool, *pluginapi.Error) {
 	path := vhostPath(domain)
 	if err := s.validateManagedPath(path); err != nil {
-		return "", false, invalidParam("非法 vhost 路径: " + err.Error())
+		return "", "", false, invalidParam("非法 vhost 路径: " + err.Error())
 	}
 	m, perr := s.loadManifest()
 	if perr != nil {
-		return "", false, perr
+		return "", "", false, perr
 	}
 	managed, ok := m.Sites[domain]
 	if !ok {
 		// 幂等：没有清单记录就当作已删除，不报错、不碰任何文件。
-		return path, false, nil
+		return path, "", false, nil
 	}
 	if managed != path {
-		return "", false, &pluginapi.Error{
+		return "", "", false, &pluginapi.Error{
 			Code:    pluginapi.E_CONFLICT,
 			Message: "清单中的 vhost 路径与当前配置不一致，拒绝删除: " + managed,
 		}
 	}
 	if err := s.validateManagedPath(managed); err != nil {
-		return "", false, internalErr("清单路径校验失败: " + err.Error())
+		return "", "", false, internalErr("清单路径校验失败: " + err.Error())
+	}
+	backup := ""
+	if _, statErr := os.Stat(managed); statErr == nil {
+		original, readErr := os.ReadFile(managed)
+		if readErr != nil {
+			return "", "", false, internalErr("读取待删除 vhost 以备份失败: " + readErr.Error())
+		}
+		backup = filepath.Join(s.dir, backupName(domain, time.Now()))
+		if err := atomicWrite(backup, original); err != nil {
+			return "", "", false, internalErr("备份待删除 vhost 失败: " + err.Error())
+		}
 	}
 	if err := os.Remove(managed); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", false, internalErr("删除 vhost 失败: " + err.Error())
+		return "", "", false, internalErr("删除 vhost 失败: " + err.Error())
 	}
 	next := m
 	next.Sites = make(map[string]string, len(m.Sites))
@@ -234,9 +258,73 @@ func (s *vhostStore) delete(domain string) (string, bool, *pluginapi.Error) {
 		}
 	}
 	if err := atomicWrite(s.manifestPath(), encode(next)); err != nil {
-		return "", false, internalErr("更新站点清单失败: " + err.Error())
+		// 清单写失败：把片段恢复，避免"文件被删但清单还记着"的悬挂状态。
+		if backup != "" {
+			if restoreErr := os.Rename(backup, managed); restoreErr != nil {
+				return "", "", false, internalErr("更新站点清单失败且恢复 vhost 失败: " + err.Error() + "; " + restoreErr.Error())
+			}
+		}
+		return "", "", false, internalErr("更新站点清单失败: " + err.Error())
 	}
-	return path, true, nil
+	return path, backup, true, nil
+}
+
+// validateRootPath 校验站点根目录：绝对路径、无冗余分量、字符集安全。
+// root 会原样进入 nginx 配置，这是防配置注入的硬闸，不只是路径合法性检查。
+func validateRootPath(root string) error {
+	if !filepath.IsAbs(root) {
+		return errors.New("必须是绝对路径")
+	}
+	if root != filepath.Clean(root) {
+		return errors.New("不能含冗余路径分量")
+	}
+	if !rootPathRE.MatchString(root) {
+		return errors.New("仅允许字母数字与 ._/@+-，禁止空白、分号、花括号与换行")
+	}
+	return nil
+}
+
+// fileSnapshot 记录单个文件被改动前的字节与权限，用于校验失败后的原样恢复。
+type fileSnapshot struct {
+	path   string
+	data   []byte
+	mode   os.FileMode
+	exists bool
+}
+
+// snapshotFile 读取文件当前状态；不存在也是合法状态（存在=false）。
+func snapshotFile(path string) (fileSnapshot, error) {
+	st, statErr := os.Stat(path)
+	if errors.Is(statErr, os.ErrNotExist) {
+		return fileSnapshot{path: path}, nil
+	}
+	if statErr != nil {
+		return fileSnapshot{}, statErr
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	return fileSnapshot{path: path, data: data, mode: st.Mode().Perm(), exists: true}, nil
+}
+
+// restore 把文件恢复成快照状态：原本存在则原子写回原字节与权限，原本不存在则删除。
+func (s fileSnapshot) restore() error {
+	if !s.exists {
+		if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("删除 %s: %w", s.path, err)
+		}
+		return nil
+	}
+	if err := atomicWrite(s.path, s.data); err != nil {
+		return fmt.Errorf("恢复 %s: %w", s.path, err)
+	}
+	if s.mode != 0 {
+		if err := os.Chmod(s.path, s.mode); err != nil {
+			return fmt.Errorf("恢复 %s 权限: %w", s.path, err)
+		}
+	}
+	return nil
 }
 
 // list 从清单返回当前已被本插件管理的站点。

@@ -92,6 +92,11 @@ func startPlugin(t *testing.T, binary, confDir string, memLimitKB int) (*exec.Cm
 		"KORE_PLUGIN_SOCK="+sock,
 		"KORE_LOG_LEVEL=error",
 		"KORE_SITE_CONF_DIR="+confDir,
+		// 故障注入不依赖宿主是否装了 nginx：命令层用 true 桩，
+		// 保留 create 的完整"校验 → 重载"链路（true 忽略追加的固定旗标）。
+		"KORE_NGINX_TEST_CMD=true",
+		"KORE_NGINX_RELOAD_CMD=true",
+		"KORE_NGINX_DUMP_CMD=true",
 	)
 	if err := cmd.Start(); err != nil {
 		_ = ln.Close()

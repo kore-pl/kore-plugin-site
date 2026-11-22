@@ -53,44 +53,51 @@ func dispatch(request *pluginapi.Request, cfg config, logger *slog.Logger) (*plu
 	return response, false
 }
 
-// handleSiteVerb 执行站点方法：create/delete 真写独立 conf.d vhost 片段，
-// list 从本插件清单读取；不碰宿主主配置、不抢 default_server、不 reload。
+// handleSiteVerb 执行站点方法：create/delete 走"落盘 → nginx -t → reload"闭环，
+// list/status 返回真实生效状态；所有 nginx 命令都是固定 argv，入参只参与路径生成。
 func handleSiteVerb(verb string, params json.RawMessage, response *pluginapi.Response) *pluginapi.Error {
-	store := newVHostStore()
-	switch verb {
-	case "list":
-		sites, perr := store.list()
+	if verb == "list" {
+		svc, perr := newSiteService()
 		if perr != nil {
 			return perr
 		}
-		response.Result = encode(siteListResult{Sites: sites, Count: len(sites), Applied: true})
+		result, perr := svc.list()
+		if perr != nil {
+			return perr
+		}
+		response.Result = encode(result)
 		return nil
+	}
+
+	p, perr := parseSiteParams(params)
+	if perr != nil {
+		return perr
+	}
+	svc, perr := newSiteService()
+	if perr != nil {
+		return perr
+	}
+	switch verb {
 	case "create":
-		p, perr := parseSiteParams(params)
+		result, perr := svc.create(p)
 		if perr != nil {
 			return perr
 		}
-		path, backup, created, perr := store.create(p)
-		if perr != nil {
-			return perr
-		}
-		response.Result = encode(siteCreateResult{
-			Domain: p.Domain, VHostPath: path, DefaultServer: false,
-			Applied: true, BackupPath: backup, Created: created,
-		})
+		response.Result = encode(result)
 		return nil
 	case "delete":
-		p, perr := parseSiteParams(params)
+		result, perr := svc.delete(p.Domain)
 		if perr != nil {
 			return perr
 		}
-		path, deleted, perr := store.delete(p.Domain)
+		response.Result = encode(result)
+		return nil
+	case "status":
+		result, perr := svc.status(p.Domain)
 		if perr != nil {
 			return perr
 		}
-		response.Result = encode(siteDeleteResult{
-			Domain: p.Domain, VHostPath: path, Applied: true, Deleted: deleted,
-		})
+		response.Result = encode(result)
 		return nil
 	default:
 		return notFound(verb)
@@ -101,7 +108,7 @@ func handleSiteVerb(verb string, params json.RawMessage, response *pluginapi.Res
 func businessVerb(method, id string) (string, bool) {
 	verb := strings.TrimPrefix(method, id+".")
 	switch verb {
-	case "list", "create", "delete":
+	case "list", "create", "delete", "status":
 		return verb, true
 	default:
 		return "", false

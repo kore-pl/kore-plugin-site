@@ -2,7 +2,9 @@
 //
 // site 只生独立 conf.d vhost 片段（server/listen/server_name/location），
 // 绝不内置或捆绑 nginx/caddy/httpd 二进制（裁决37），不改宿主主配置、
-// 不抢 default_server、不 reload web server（reload 交宿主/用户，红队 R6）。
+// 不抢 default_server。建站链路为：原子写 vhost → nginx -t 校验（失败回滚）
+// → nginx -s reload（失败明确回 E_UPSTREAM）。所有命令使用固定 argv，
+// RPC 入参（domain/root/port）只参与文件路径与已校验的配置模板。
 //
 // 协议面（kore.plugin.v1）：连接内核注入的 UDS → kore.hello 握手 → 会话循环
 // 读 request、按 method 分发并回 response；stdout 留给协议，日志一律写 stderr。

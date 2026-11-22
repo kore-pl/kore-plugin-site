@@ -30,10 +30,15 @@ func invoke(t *testing.T, method, reqID string, params json.RawMessage) *plugina
 }
 
 // useTempConfDir 把每个用例的 conf.d 指到独立临时目录，并用 t.Setenv 自动还原。
+// 同时把 nginx 三条命令换成 /bin/true：单测不依赖宿主是否安装 nginx，
+// 需要失败分支的用例在用例内再 t.Setenv 覆盖。
 func useTempConfDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv(vhostDirEnv, dir)
+	t.Setenv(nginxTestCmdEnv, "/bin/true")
+	t.Setenv(nginxReloadCmdEnv, "/bin/true")
+	t.Setenv(nginxDumpCmdEnv, "/bin/true")
 	return dir
 }
 
@@ -55,8 +60,12 @@ func TestSiteMethods(t *testing.T) {
 			if response.ReqID != "r-1" {
 				t.Fatalf("req_id=%q，期望回显 r-1", response.ReqID)
 			}
-			if got := resultString(t, response); got != `{"sites":[],"count":0,"applied":true}` {
-				t.Fatalf("result=%s", got)
+			var result siteListResult
+			if err := json.Unmarshal(response.Result, &result); err != nil {
+				t.Fatalf("解析 list 结果失败: %v (%s)", err, response.Result)
+			}
+			if result.Count != 0 || len(result.Sites) != 0 || !result.Applied {
+				t.Fatalf("空清单结果=%+v，期望 count=0/sites=[]/applied=true", result)
 			}
 		})
 	}
@@ -102,16 +111,24 @@ func TestUnknownMethod(t *testing.T) {
 	}
 }
 
-// TestVHostCreateWrite 验证 create 真写独立 vhost：server/listen/server_name/location
-// 齐全，且不含 default_server；清单登记该文件。
+// TestVHostCreateWrite 验证 create 真写独立 vhost 并返回真实校验/重载状态：
+// server/listen/server_name/location 齐全，且不含 default_server；清单登记该文件。
 func TestVHostCreateWrite(t *testing.T) {
 	dir := useTempConfDir(t)
 	params := json.RawMessage(`{"domain":"example.com","port":8080,"root":"/srv/example"}`)
 	response := invoke(t, "site.create", "r-create", params)
-	got := resultString(t, response)
-	want := `{"domain":"example.com","vhost_path":"` + filepath.Join(dir, "kore-site-example.com.conf") + `","default_server":false,"applied":true,"created":true}`
-	if got != want {
-		t.Fatalf("result=%s\n期望 %s", got, want)
+	var result siteCreateResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		t.Fatalf("解析 create 结果失败: %v (%s)", err, response.Result)
+	}
+	if result.Domain != "example.com" || result.VHostPath != filepath.Join(dir, "kore-site-example.com.conf") {
+		t.Fatalf("create 结果域/路径不对: %+v", result)
+	}
+	if !result.Created || !result.Applied || !result.TestPassed || !result.Reloaded {
+		t.Fatalf("create 应 created/applied/test_passed/reloaded 全 true: %+v", result)
+	}
+	if result.DefaultServer {
+		t.Fatalf("create 不应占用 default_server: %+v", result)
 	}
 
 	path := filepath.Join(dir, "kore-site-example.com.conf")
@@ -273,6 +290,301 @@ func TestNoWebServerBinary(t *testing.T) {
 					t.Fatalf("%s/%s 含禁用的 web server 二进制标识 %q", dir, e.Name(), forbidden)
 				}
 			}
+		}
+	}
+}
+
+// readManifestFile 读取并解析清单，测试用。
+func readManifestFile(t *testing.T, dir string) siteManifest {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, manifestName))
+	if err != nil {
+		t.Fatalf("读取清单失败: %v", err)
+	}
+	var m siteManifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("解析清单失败: %v", err)
+	}
+	return m
+}
+
+// TestNginxCommandConstruction 验证环境命令只提供前缀，操作旗标由插件固定注入，
+// 且 RPC 入参（domain）不会出现在 argv 里。
+func TestNginxCommandConstruction(t *testing.T) {
+	cases := []struct {
+		name    string
+		testRaw string
+		want    []string
+	}{
+		{name: "默认补 -t", testRaw: "nginx", want: []string{"nginx", "-t"}},
+		{name: "完整命令不重复", testRaw: "nginx -t", want: []string{"nginx", "-t"}},
+		{name: "docker exec 完整命令", testRaw: "docker exec kore-site-test nginx -t", want: []string{"docker", "exec", "kore-site-test", "nginx", "-t"}},
+		{name: "docker exec 前缀补旗标", testRaw: "docker exec kore-site-test nginx", want: []string{"docker", "exec", "kore-site-test", "nginx", "-t"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(nginxTestCmdEnv, tc.testRaw)
+			t.Setenv(nginxReloadCmdEnv, "/bin/true")
+			t.Setenv(nginxDumpCmdEnv, "/bin/true")
+			runner, perr := loadNginxRunner()
+			if perr != nil {
+				t.Fatalf("解析命令失败: %v", perr.Message)
+			}
+			got := runner.test.argv("-t")
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("argv=%q，期望 %q", got, tc.want)
+			}
+			for _, arg := range got {
+				if strings.Contains(arg, "example.com") {
+					t.Fatalf("argv 混入 RPC 入参: %q", got)
+				}
+			}
+		})
+	}
+}
+
+// TestNginxCommandRejectsInjectedFlags 验证前缀自带操作旗标会被拒绝（E_INTERNAL），
+// 防止 "nginx -s stop" 之类的命令借环境变量越权。
+func TestNginxCommandRejectsInjectedFlags(t *testing.T) {
+	cases := []string{
+		`docker exec -t kore-site-test nginx`,
+		`nginx -s stop`,
+		`nginx -t -c /etc/nginx/nginx.conf`,
+		`sh -c 'unterminated`,
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv(nginxTestCmdEnv, raw)
+			t.Setenv(nginxReloadCmdEnv, "/bin/true")
+			t.Setenv(nginxDumpCmdEnv, "/bin/true")
+			runner, perr := loadNginxRunner()
+			if perr == nil {
+				t.Fatalf("命令 %q 应被拒绝，实际 argv=%q", raw, runner.test.prefix)
+			}
+			if perr.Code != pluginapi.E_INTERNAL {
+				t.Fatalf("错误码=%s，期望 E_INTERNAL", perr.Code)
+			}
+		})
+	}
+}
+
+// TestRootInjectionRejected 验证 root 也会被当作配置注入面拦截。
+func TestRootInjectionRejected(t *testing.T) {
+	useTempConfDir(t)
+	cases := []string{
+		`/srv/x;\nserver {}`,
+		`/srv/x;rm -rf /`,
+		`relative/path`,
+		`/srv/x y`,
+		`/srv/x#`,
+	}
+	for i, root := range cases {
+		t.Run(root, func(t *testing.T) {
+			params := json.RawMessage(`{"domain":"inj` + itoa(i) + `.example.com","root":` + quoteJSON(root) + `}`)
+			response := invoke(t, "site.create", "r-root", params)
+			if response.Error == nil || response.Error.Code != pluginapi.E_INVALID {
+				t.Fatalf("root=%q 应 E_INVALID，实际 error=%v result=%s", root, response.Error, response.Result)
+			}
+			if !strings.Contains(response.Error.Message, "root") {
+				t.Fatalf("错误信息应提到 root: %q", response.Error.Message)
+			}
+		})
+	}
+}
+
+// quoteJSON 把字符串转成 JSON 字面量，测试构造用。
+func quoteJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// TestCreateTestFailureRollsBack 验证 nginx -t 失败时：新站点删除、覆盖站点恢复原字节、
+// 清单同步回滚，且错误码 E_INVALID 带 nginx 输出。
+func TestCreateTestFailureRollsBack(t *testing.T) {
+	dir := useTempConfDir(t)
+	response := invoke(t, "site.create", "r-1", json.RawMessage(`{"domain":"example.com","root":"/srv/original"}`))
+	if response.Error != nil {
+		t.Fatalf("首次 create 失败: %s", response.Error.Message)
+	}
+	path := filepath.Join(dir, "kore-site-example.com.conf")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(nginxTestCmdEnv, `sh -c 'echo "nginx: [emerg] simulated bad config" >&2; exit 1'`)
+	overwrite := invoke(t, "site.create", "r-2", json.RawMessage(`{"domain":"example.com","root":"/srv/changed"}`))
+	if overwrite.Error == nil || overwrite.Error.Code != pluginapi.E_INVALID {
+		t.Fatalf("覆盖时校验失败应 E_INVALID，实际 error=%v result=%s", overwrite.Error, overwrite.Result)
+	}
+	if !strings.Contains(overwrite.Error.Message, "nginx: [emerg] simulated bad config") {
+		t.Fatalf("错误信息应含 nginx 输出: %q", overwrite.Error.Message)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(original) {
+		t.Fatalf("覆盖失败后未恢复原 vhost: %q err=%v", after, err)
+	}
+	if _, ok := readManifestFile(t, dir).Sites["example.com"]; !ok {
+		t.Fatal("覆盖失败后清单丢失 example.com")
+	}
+
+	newSite := invoke(t, "site.create", "r-3", json.RawMessage(`{"domain":"fresh.example.com"}`))
+	if newSite.Error == nil || newSite.Error.Code != pluginapi.E_INVALID {
+		t.Fatalf("新建站点校验失败应 E_INVALID，实际 error=%v", newSite.Error)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "kore-site-fresh.example.com.conf")); !os.IsNotExist(err) {
+		t.Fatalf("校验失败后新 vhost 应被删除: %v", err)
+	}
+	if _, ok := readManifestFile(t, dir).Sites["fresh.example.com"]; ok {
+		t.Fatal("校验失败后清单不应登记新站点")
+	}
+}
+
+// TestCreateReloadFailureKeepsWrittenSite 验证 reload 失败回 E_UPSTREAM，
+// 且站点已写入（磁盘可见）——不做回滚，明确告知"未生效"。
+func TestCreateReloadFailureKeepsWrittenSite(t *testing.T) {
+	dir := useTempConfDir(t)
+	invoke(t, "site.create", "r-1", json.RawMessage(`{"domain":"example.com","root":"/srv/one"}`))
+
+	t.Setenv(nginxReloadCmdEnv, `sh -c 'echo "nginx: [emerg] reload failed" >&2; exit 1'`)
+	response := invoke(t, "site.create", "r-2", json.RawMessage(`{"domain":"example.com","root":"/srv/two"}`))
+	if response.Error == nil || response.Error.Code != pluginapi.E_UPSTREAM {
+		t.Fatalf("reload 失败应 E_UPSTREAM，实际 error=%v result=%s", response.Error, response.Result)
+	}
+	if len(response.Result) != 0 && string(response.Result) != "null" {
+		t.Fatalf("reload 失败不应回成功载荷: %s", response.Result)
+	}
+	for _, want := range []string{"已写入", "未生效", "reload failed"} {
+		if !strings.Contains(response.Error.Message, want) {
+			t.Fatalf("错误信息应含 %q: %q", want, response.Error.Message)
+		}
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "kore-site-example.com.conf"))
+	if err != nil || !strings.Contains(string(content), "/srv/two") {
+		t.Fatalf("reload 失败时新配置应保留在磁盘: %q err=%v", content, err)
+	}
+	if _, ok := readManifestFile(t, dir).Sites["example.com"]; !ok {
+		t.Fatal("reload 失败时清单应保留站点")
+	}
+}
+
+// TestDeleteRollbackOnFailures 验证 delete 后 test/reload 失败都会恢复 vhost 与清单，
+// 只有全链路成功才真正删除。
+func TestDeleteRollbackOnFailures(t *testing.T) {
+	dir := useTempConfDir(t)
+	invoke(t, "site.create", "r-1", json.RawMessage(`{"domain":"example.com"}`))
+	path := filepath.Join(dir, "kore-site-example.com.conf")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(nginxTestCmdEnv, `sh -c 'echo "test boom" >&2; exit 1'`)
+	badTest := invoke(t, "site.delete", "r-2", json.RawMessage(`{"domain":"example.com"}`))
+	if badTest.Error == nil || badTest.Error.Code != pluginapi.E_INVALID {
+		t.Fatalf("删除后校验失败应 E_INVALID，实际 error=%v", badTest.Error)
+	}
+	if after, err := os.ReadFile(path); err != nil || string(after) != string(original) {
+		t.Fatalf("校验失败后应恢复 vhost: %q err=%v", after, err)
+	}
+	if _, ok := readManifestFile(t, dir).Sites["example.com"]; !ok {
+		t.Fatal("校验失败后清单应恢复站点")
+	}
+
+	t.Setenv(nginxTestCmdEnv, "/bin/true")
+	t.Setenv(nginxReloadCmdEnv, `sh -c 'echo "reload boom" >&2; exit 1'`)
+	badReload := invoke(t, "site.delete", "r-3", json.RawMessage(`{"domain":"example.com"}`))
+	if badReload.Error == nil || badReload.Error.Code != pluginapi.E_UPSTREAM {
+		t.Fatalf("删除后重载失败应 E_UPSTREAM，实际 error=%v", badReload.Error)
+	}
+	if after, err := os.ReadFile(path); err != nil || string(after) != string(original) {
+		t.Fatalf("重载失败后应恢复 vhost: %q err=%v", after, err)
+	}
+
+	t.Setenv(nginxReloadCmdEnv, "/bin/true")
+	ok := invoke(t, "site.delete", "r-4", json.RawMessage(`{"domain":"example.com"}`))
+	var result siteDeleteResult
+	if err := json.Unmarshal(ok.Result, &result); err != nil {
+		t.Fatalf("解析 delete 结果失败: %v", err)
+	}
+	if !result.Deleted || !result.Applied || !result.TestPassed || !result.Reloaded {
+		t.Fatalf("delete 成功应 deleted/applied/test_passed/reloaded 全 true: %+v", result)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("delete 成功后 vhost 应消失: %v", err)
+	}
+}
+
+// TestSiteStatusSignals 验证 status 的四个独立信号：conf/测试/站点目录/已加载。
+func TestSiteStatusSignals(t *testing.T) {
+	dir := useTempConfDir(t)
+	root := filepath.Join(dir, "www")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(nginxTestCmdEnv, `sh -c 'echo "nginx: configuration file test is successful" >&2'`)
+	t.Setenv(nginxDumpCmdEnv, `sh -c 'printf "server_name example.com;\n"'`)
+	invoke(t, "site.create", "r-1", json.RawMessage(`{"domain":"example.com","root":`+quoteJSON(root)+`}`))
+
+	response := invoke(t, "site.status", "r-2", json.RawMessage(`{"domain":"example.com"}`))
+	var status siteStatusResult
+	if err := json.Unmarshal(response.Result, &status); err != nil {
+		t.Fatalf("解析 status 失败: %v (%s)", err, response.Result)
+	}
+	if !status.ConfExists || !status.Managed || !status.TestPassed || !status.SiteDirExists || !status.Loaded || !status.LoadChecked {
+		t.Fatalf("status 应全绿: %+v", status)
+	}
+	if !strings.Contains(status.TestOutput, "test is successful") {
+		t.Fatalf("status 应带 nginx -t 输出，实际 %q", status.TestOutput)
+	}
+
+	missing := invoke(t, "site.status", "r-3", json.RawMessage(`{"domain":"missing.example.com"}`))
+	var missingStatus siteStatusResult
+	if err := json.Unmarshal(missing.Result, &missingStatus); err != nil {
+		t.Fatal(err)
+	}
+	if missingStatus.ConfExists || missingStatus.Managed || missingStatus.SiteDirExists || missingStatus.Loaded {
+		t.Fatalf("不存在的站点不应有存在/加载信号: %+v", missingStatus)
+	}
+	if !missingStatus.TestPassed {
+		t.Fatalf("全局 nginx -t 仍应通过: %+v", missingStatus)
+	}
+}
+
+// TestSiteListReportsRealStatus 验证 list 每条带 exists/test_ok/reloaded，
+// 且 test 失败时 test_ok 跟随为 false。
+func TestSiteListReportsRealStatus(t *testing.T) {
+	useTempConfDir(t)
+	t.Setenv(nginxDumpCmdEnv, `sh -c 'printf "server_name one.example.com;\nserver_name two.example.com;\n"'`)
+	invoke(t, "site.create", "r-1", json.RawMessage(`{"domain":"one.example.com"}`))
+	invoke(t, "site.create", "r-2", json.RawMessage(`{"domain":"two.example.com"}`))
+
+	response := invoke(t, "site.list", "r-3", nil)
+	var result siteListResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		t.Fatalf("解析 list 失败: %v", err)
+	}
+	if result.Count != 2 || !result.Applied {
+		t.Fatalf("list 结果=%+v，期望 2 条且 applied", result)
+	}
+	for _, site := range result.Sites {
+		if !site.Exists || !site.TestOK || !site.Reloaded {
+			t.Fatalf("站点 %s 应 exists/test_ok/reloaded 全 true: %+v", site.Domain, site)
+		}
+	}
+
+	t.Setenv(nginxTestCmdEnv, `sh -c 'exit 1'`)
+	failing := invoke(t, "site.list", "r-4", nil)
+	var failingResult siteListResult
+	if err := json.Unmarshal(failing.Result, &failingResult); err != nil {
+		t.Fatal(err)
+	}
+	if failingResult.Applied {
+		t.Fatalf("nginx -t 失败时 list.applied 应为 false: %+v", failingResult)
+	}
+	for _, site := range failingResult.Sites {
+		if site.TestOK {
+			t.Fatalf("nginx -t 失败时 test_ok 应为 false: %+v", site)
 		}
 	}
 }
