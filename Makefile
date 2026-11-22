@@ -16,7 +16,7 @@ build:
 # 打包：info.json（回填 size_bytes）+ bin/site + SHA256SUMS，并附 .sha256。
 # 本插件无 web/ 前端，故不打 web 目录。
 dist: build
-	@set -e; \
+	@set -eo pipefail; \
 	rm -rf $(DIST)/stage $(PACKAGE) $(PACKAGE).sha256; \
 	mkdir -p $(DIST)/stage/bin; \
 	cp $(BIN) $(DIST)/stage/bin/$(ID); \
@@ -29,7 +29,7 @@ dist: build
 		size=$$next; \
 	done; \
 	( cd $(DIST)/stage && sha256sum info.json bin/$(ID) > SHA256SUMS ); \
-	tar -czf $(PACKAGE) -C $(DIST)/stage info.json bin SHA256SUMS; \
+	tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C $(DIST)/stage . | gzip -9n > $(PACKAGE); \
 	( cd $(DIST) && sha256sum $(ID)-$(VERSION).tar.gz > $(ID)-$(VERSION).tar.gz.sha256 ); \
 	rm -rf $(DIST)/stage; \
 	echo "打包完成: $(PACKAGE)"
