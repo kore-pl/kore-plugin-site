@@ -29,7 +29,7 @@ dist: build
 		size=$$next; \
 	done; \
 	( cd $(DIST)/stage && sha256sum info.json bin/$(ID) > SHA256SUMS ); \
-	tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C $(DIST)/stage . | gzip -9n > $(PACKAGE); \
+	tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C $(DIST)/stage info.json bin SHA256SUMS | gzip -9n > $(PACKAGE); \
 	( cd $(DIST) && sha256sum $(ID)-$(VERSION).tar.gz > $(ID)-$(VERSION).tar.gz.sha256 ); \
 	rm -rf $(DIST)/stage; \
 	echo "打包完成: $(PACKAGE)"
