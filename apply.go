@@ -150,10 +150,19 @@ func (s *siteService) list() (siteListResult, *pluginapi.Error) {
 	dumpOutcome := s.runner.runDump()
 	testOK := testOutcome.ran && testOutcome.err == nil
 	dumpOK := dumpOutcome.ran && dumpOutcome.err == nil
+	// "没测"与"测挂"必须可区分：skipped 走灰色未检测，failed 才允许红色。
+	testSkipped, reloadSkipped := !testOutcome.ran, !dumpOutcome.ran
+	testOutput := ""
+	if testOutcome.ran && testOutcome.err != nil {
+		testOutput = describeCommand(testOutcome)
+	}
 	allExists, allLoaded := true, true
 	for i := range sites {
 		sites[i].Exists = sites[i].Enabled
 		sites[i].TestOK = testOK
+		sites[i].TestSkipped = testSkipped
+		sites[i].ReloadSkipped = reloadSkipped
+		sites[i].TestOutput = testOutput
 		sites[i].Reloaded = dumpOK && configHasServerName(dumpOutcome.output, sites[i].Domain)
 		if !sites[i].Exists {
 			allExists = false
@@ -197,6 +206,7 @@ func (s *siteService) status(domain string) (siteStatusResult, *pluginapi.Error)
 		result.TestOutput = strings.TrimSpace(describeCommand(testOutcome))
 	}
 	dumpOutcome := s.runner.runDump()
+	result.ReloadSkipped = !dumpOutcome.ran
 	result.LoadChecked = dumpOutcome.ran && dumpOutcome.err == nil
 	if result.LoadChecked {
 		result.Loaded = configHasServerName(dumpOutcome.output, domain)

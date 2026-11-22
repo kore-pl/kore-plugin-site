@@ -23,3 +23,9 @@
 - `site.list` 每条补齐 `exists` / `test_ok` / `reloaded` 真实状态。
 - 命令执行安全：环境变量只提供命令前缀，`-t` / `-s reload` / `-T` 由插件固定注入，argv 不拼接任何 RPC 入参；`root` 增加配置注入字符校验。
 - 新增 docker nginx:alpine 端到端（`-tags e2e`）：create 命中 200、坏 conf 被 `nginx -t` 拦截、失败回滚后配置仍合法、delete 后不再命中站点。
+
+## [Unreleased]
+
+### Fixed
+
+- `site.list` / `site.status` 增加 `test_skipped` / `reload_skipped` / `test_output`，区分「本机未配置 nginx、没测」与「测了挂了」；前端据此渲染灰色未检测而不是红色失败。

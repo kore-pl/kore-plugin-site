@@ -588,3 +588,37 @@ func TestSiteListReportsRealStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestSiteListReportsSkipped 验证"没测"返回 skipped 而非 failed：
+// nginx 未配置时 test_skipped/reload_skipped 为 true，且不携带失败摘要。
+func TestSiteListReportsSkipped(t *testing.T) {
+	useTempConfDir(t)
+	invoke(t, "site.create", "s-1", json.RawMessage(`{"domain":"skip.example.com"}`))
+	t.Setenv(nginxTestCmdEnv, "off")
+	t.Setenv(nginxDumpCmdEnv, "off")
+
+	response := invoke(t, "site.list", "s-2", nil)
+	var result siteListResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		t.Fatalf("解析 list 失败: %v", err)
+	}
+	if len(result.Sites) != 1 {
+		t.Fatalf("期望 1 个站点: %+v", result)
+	}
+	site := result.Sites[0]
+	if !site.TestSkipped || !site.ReloadSkipped {
+		t.Fatalf("未配置 nginx 时应 skipped: %+v", site)
+	}
+	if site.TestOK || site.Reloaded || site.TestOutput != "" {
+		t.Fatalf("skipped 不应被当成通过或失败: %+v", site)
+	}
+
+	statusResponse := invoke(t, "site.status", "s-3", json.RawMessage(`{"domain":"skip.example.com"}`))
+	var status siteStatusResult
+	if err := json.Unmarshal(statusResponse.Result, &status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.TestSkipped || !status.ReloadSkipped || status.TestOutput != "" {
+		t.Fatalf("status 也应区分 skipped 与失败: %+v", status)
+	}
+}

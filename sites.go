@@ -18,6 +18,12 @@ type siteInfo struct {
 	Exists    bool   `json:"exists"`
 	TestOK    bool   `json:"test_ok"`
 	Reloaded  bool   `json:"reloaded"`
+	// TestSkipped 表示本机没有可执行的 nginx（未配置/显式关闭），"没测"不等于"测挂"。
+	TestSkipped bool `json:"test_skipped"`
+	// ReloadSkipped 表示未执行 nginx -T 探测，因此不知道是否已被加载。
+	ReloadSkipped bool `json:"reload_skipped"`
+	// TestOutput 是 nginx -t 的真实失败摘要（仅测过且失败时非空）。
+	TestOutput string `json:"test_output,omitempty"`
 }
 
 // siteListResult 是 site.list 的结果。
@@ -63,11 +69,13 @@ type siteStatusResult struct {
 	Managed       bool   `json:"managed"`
 	ConfExists    bool   `json:"conf_exists"`
 	TestPassed    bool   `json:"test_passed"`
-	TestSkipped   bool   `json:"test_skipped,omitempty"`
+	TestSkipped   bool   `json:"test_skipped"`
 	TestOutput    string `json:"test_output,omitempty"`
 	SiteDirExists bool   `json:"site_dir_exists"`
 	Loaded        bool   `json:"loaded"`
 	LoadChecked   bool   `json:"load_checked"`
+	// ReloadSkipped 表示未执行 nginx -T 探测（未配置 nginx 或显式关闭）。
+	ReloadSkipped bool `json:"reload_skipped"`
 }
 
 // siteParams 是站点方法的入参。DefaultServer 仅用于识别并拒绝抢占默认站点；

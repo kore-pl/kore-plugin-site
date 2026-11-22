@@ -16,9 +16,11 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | --- | --- |
 | `site.create` / `create` | 写 vhost + 清单 → `nginx -t` → `nginx -s reload`；返回 `vhost_path` / `backup_path` / `test_passed` / `reloaded` / `applied`。校验失败回滚，重载失败回 `E_UPSTREAM`。 |
 | `site.delete` / `delete` | 备份并删除 vhost + 清单 → `nginx -t` → `nginx -s reload`；任一失败恢复删除前状态。 |
-| `site.status` / `status` | 返回 `conf_exists` / `test_passed` / `site_dir_exists` / `loaded`（`nginx -T` 精确匹配 `server_name`）/ `managed`。只读，不 reload。 |
-| `site.list` / `list` | 每条带 `exists` / `test_ok` / `reloaded` 真实状态；`nginx -t` 与 `nginx -T` 各只跑一次。 |
+| `site.status` / `status` | 返回 `conf_exists` / `test_passed` / `test_skipped` / `site_dir_exists` / `loaded` / `load_checked` / `reload_skipped` / `managed`。只读，不 reload。 |
+| `site.list` / `list` | 每条带 `exists` / `test_ok` / `test_skipped` / `reloaded` / `reload_skipped` / `test_output` 真实状态；`nginx -t` 与 `nginx -T` 各只跑一次。 |
 | `kore.ping` / `kore.reload` / `kore.shutdown` | 协议必选方法；`kore.reload` 无外部配置，`config_digest` 为空。 |
+
+**三态口径**：`test_skipped=true` / `reload_skipped=true` 表示本机没有可用的 nginx（未配置或 `KORE_NGINX_*_CMD=off` 显式关闭），此时 `test_passed=false` **不代表站点故障**；只有 `test_passed=false && !test_skipped` 才是真的 `nginx -t` 失败，并附 `test_output` 摘要。
 
 `domain` 约束：小写、每个标签以字母数字开头结尾、至少两个标签、总长 ≤ 253；拒绝路径分隔符与 `..`，防止 vhost 路径穿越。
 `root` 约束：绝对路径、无冗余分量、仅允许 `A-Za-z0-9._/@+-`，拒绝空白/分号/花括号/换行等配置注入字符。
