@@ -18,9 +18,6 @@ const domainMaxLen = 253
 // 它同时拒绝路径分隔符与 ".."，防止 conf.d vhost 路径穿越（红队 R6 / 提案 §2）。
 var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
 
-// notAppliedNote 明确本批只做校验与结构化返回，不触碰宿主 nginx。
-const notAppliedNote = "M2-A 第一批：仅参数校验与结构化返回，未改动 nginx；独立 conf.d vhost + include 留待 M2-A 第二批"
-
 // statusResult 是 kore.ping 的结果（PLUGIN-PROTOCOL §7.1）。
 type statusResult struct {
 	Status     string `json:"status"`
@@ -56,29 +53,44 @@ func dispatch(request *pluginapi.Request, cfg config, logger *slog.Logger) (*plu
 	return response, false
 }
 
-// handleSiteVerb 执行站点方法：当前只校验参数并返回结构化"提案"，不落盘。
+// handleSiteVerb 执行站点方法：create/delete 真写独立 conf.d vhost 片段，
+// list 从本插件清单读取；不碰宿主主配置、不抢 default_server、不 reload。
 func handleSiteVerb(verb string, params json.RawMessage, response *pluginapi.Response) *pluginapi.Error {
+	store := newVHostStore()
 	switch verb {
 	case "list":
-		response.Result = encode(siteListResult{Sites: []siteInfo{}, Count: 0, Applied: false})
+		sites, perr := store.list()
+		if perr != nil {
+			return perr
+		}
+		response.Result = encode(siteListResult{Sites: sites, Count: len(sites), Applied: true})
 		return nil
-	case "create", "delete":
+	case "create":
 		p, perr := parseSiteParams(params)
 		if perr != nil {
 			return perr
 		}
-		path := vhostPath(p.Domain)
-		if verb == "create" {
-			response.Result = encode(siteCreateResult{
-				Domain: p.Domain, VHostPath: path, DefaultServer: false,
-				Applied: false, Note: notAppliedNote,
-			})
-		} else {
-			response.Result = encode(siteDeleteResult{
-				Domain: p.Domain, VHostPath: path,
-				Applied: false, Note: notAppliedNote,
-			})
+		path, backup, created, perr := store.create(p)
+		if perr != nil {
+			return perr
 		}
+		response.Result = encode(siteCreateResult{
+			Domain: p.Domain, VHostPath: path, DefaultServer: false,
+			Applied: true, BackupPath: backup, Created: created,
+		})
+		return nil
+	case "delete":
+		p, perr := parseSiteParams(params)
+		if perr != nil {
+			return perr
+		}
+		path, deleted, perr := store.delete(p.Domain)
+		if perr != nil {
+			return perr
+		}
+		response.Result = encode(siteDeleteResult{
+			Domain: p.Domain, VHostPath: path, Applied: true, Deleted: deleted,
+		})
 		return nil
 	default:
 		return notFound(verb)

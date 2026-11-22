@@ -1,8 +1,8 @@
-// Package main 是 kore M2 的 site 插件：nginx 站点管理。
+// Package main 是 kore 的 site 插件：宿主已安装 web server 的站点配置生成器。
 //
-// 当前版本（0.1.0）只完成协议握手与 site.list / site.create / site.delete
-// 的参数校验和结构化返回，不实际改动 nginx 配置；真实 conf.d vhost 写入
-// 留待 M2-A 第二批。
+// site 只生独立 conf.d vhost 片段（server/listen/server_name/location），
+// 绝不内置或捆绑 nginx/caddy/httpd 二进制（裁决37），不改宿主主配置、
+// 不抢 default_server、不 reload web server（reload 交宿主/用户，红队 R6）。
 //
 // 协议面（kore.plugin.v1）：连接内核注入的 UDS → kore.hello 握手 → 会话循环
 // 读 request、按 method 分发并回 response；stdout 留给协议，日志一律写 stderr。
