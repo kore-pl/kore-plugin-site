@@ -147,13 +147,22 @@ func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Erro
 	if perr != nil {
 		return "", "", false, perr
 	}
+	previous, existed := m.Sites[p.Domain]
 	content := vhostTemplate(p.Domain, root, port)
+	if existed && previous == path {
+		// 覆盖已有托管站点时保留 L2 状态（SSL/伪静态/反代/重定向/index），
+		// 只更新 root/port——否则"重新建站"会把证书与反代配置冲掉。
+		if old, readErr := os.ReadFile(path); readErr == nil {
+			st := parseSiteState(p.Domain, string(old))
+			st.Root, st.Port = root, port
+			content = renderVHost(st)
+		}
+	}
 	// 生成后自检：绝不产出 default_server 指令（红队 R6）。
 	if strings.Contains(stripComments(content), "default_server") {
 		return "", "", false, internalErr("生成的 vhost 含 default_server，拒绝落盘")
 	}
 
-	previous, existed := m.Sites[p.Domain]
 	if !existed {
 		if _, statErr := os.Stat(path); statErr == nil {
 			// 路径上有宿主已有文件但不在清单里：拒绝覆盖，防止误伤。
@@ -201,7 +210,14 @@ func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Erro
 		}
 		return "", "", false, internalErr("更新站点清单失败: " + err.Error())
 	}
+	// 重新建站时清掉遗留的停用副本，避免 enable 把旧配置翻回来。
+	_ = os.Remove(disabledVHostPath(p.Domain))
 	return path, backup, !existed, nil
+}
+
+// backupPath 返回本次改动的带时间戳备份路径（与 vhost 同目录、非 .conf 后缀）。
+func (s *vhostStore) backupPath(domain string) string {
+	return filepath.Join(s.dir, backupName(domain, time.Now()))
 }
 
 // delete 只删除清单内、路径校验通过的 vhost 片段；不存在返回 deleted=false。
@@ -266,6 +282,8 @@ func (s *vhostStore) deleteWithBackup(domain string) (string, string, bool, *plu
 		}
 		return "", "", false, internalErr("更新站点清单失败: " + err.Error())
 	}
+	// 停用态副本也应随删除一并清理，避免 conf.d 里留下无法管理的孤儿文件。
+	_ = os.Remove(disabledVHostPath(domain))
 	return path, backup, true, nil
 }
 
@@ -339,7 +357,20 @@ func (s *vhostStore) list() ([]siteInfo, *pluginapi.Error) {
 		if _, err := os.Stat(path); err == nil {
 			enabled = true
 		}
-		sites = append(sites, siteInfo{Domain: domain, VHostPath: path, Enabled: enabled})
+		disabled := false
+		if !enabled {
+			// 停用态：主 vhost 改名成 .conf.disabled，站点仍算"存在"。
+			if _, err := os.Stat(disabledVHostPath(domain)); err == nil {
+				disabled = true
+			}
+		}
+		sites = append(sites, siteInfo{
+			Domain:    domain,
+			VHostPath: path,
+			Enabled:   enabled,
+			Disabled:  disabled,
+			Exists:    enabled || disabled,
+		})
 	}
 	return sites, nil
 }

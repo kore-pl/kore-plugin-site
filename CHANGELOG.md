@@ -26,6 +26,29 @@
 
 ## [Unreleased]
 
+### 新增（L2 可用）
+
+- 站点配置以 vhost 注释标记块为唯一事实来源：解析（`parse.go`）↔ 渲染（`render.go`）互为逆运算，
+  写操作统一走 `applyEdit` 编排（备份 → 原子写 → `nginx -t` → reload → 失败回滚），
+  目标状态与现状一致时短路（`changed=false` + `test_skipped`）。
+- `site.bindSSL` / `site.unbindSSL`：443 监听 + 证书 + TLS1.2+ 固定套件 + 默认 80→443 跳转
+  （`force_https=false` 时 80/443 并存）；证书路径必须规范化绝对路径、字符集白名单且真实存在。
+- `site.setRewrite` / `site.getRewrite`：伪静态模板枚举 `none|wordpress|laravel|thinkphp|discuz|nextjs`，
+  写入注释块并可整体替换；`getRewrite` 从注释块解析模板名；不接受自定义原始 nginx 片段。
+- `site.setProxy` / `site.unsetProxy`：`location /` 反代，`ws=true` 补 WebSocket 升级头；
+  上游只接受 `http://host:port`（正则挡 userinfo/路径/注入）。反代与伪静态互斥，互相设置时自动清对方。
+- `site.setRedirect` / `site.unsetRedirect`：`location = <from_path>` 精确匹配重定向，`code` 默认 301；
+  `to_url` 只允许 http(s) 或站内 `/` 路径（挡 `javascript:` / `data:` / `//host`），最多 32 条。
+- `site.disable` / `site.enable`：vhost 改名 `.conf.disabled` / 改回 `.conf` + test/reload，失败改回原名，配置不删。
+- `site.setIndex` / `site.get`：默认文档（默认 `index.html index.htm index.php`）与完整配置摘要
+  （root/port/index/ssl/rewrite/proxy/redirects/enabled/disabled）。
+- `site.list` / `site.status` 增补 `disabled` 信号：停用站点 `exists=true`、不参与"已加载"判定，
+  不再让 `list.applied` 因设计内停用而变 false。
+- 重新 `site.create` 覆盖既有托管站点时保留 L2 状态（SSL/伪静态/反代/重定向/index），只更新 root/port。
+- 单测：12 个新方法的正常路径、参数校验、`nginx -t` 失败回滚、幂等短路；docker e2e 新增
+  `TestDockerNginxL2`（https 200 / http 301 / wordpress / 反代后端 / 302 / 启停 / index 六步）。
+- 文件按能力拆分，新增文件均 ≤200 行；只读巡检拆到 `inspect.go`。
+
 ### Fixed
 
 - `site.list` / `site.status` 增加 `test_skipped` / `reload_skipped` / `test_output`，区分「本机未配置 nginx、没测」与「测了挂了」；前端据此渲染灰色未检测而不是红色失败。

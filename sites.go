@@ -15,9 +15,11 @@ type siteInfo struct {
 	Domain    string `json:"domain"`
 	VHostPath string `json:"vhost_path"`
 	Enabled   bool   `json:"enabled"`
-	Exists    bool   `json:"exists"`
-	TestOK    bool   `json:"test_ok"`
-	Reloaded  bool   `json:"reloaded"`
+	// Disabled 表示 vhost 已改名为 .conf.disabled（站点停用但配置保留）。
+	Disabled bool `json:"disabled"`
+	Exists   bool `json:"exists"`
+	TestOK   bool `json:"test_ok"`
+	Reloaded bool `json:"reloaded"`
 	// TestSkipped 表示本机没有可执行的 nginx（未配置/显式关闭），"没测"不等于"测挂"。
 	TestSkipped bool `json:"test_skipped"`
 	// ReloadSkipped 表示未执行 nginx -T 探测，因此不知道是否已被加载。
@@ -68,6 +70,7 @@ type siteStatusResult struct {
 	VHostPath     string `json:"vhost_path"`
 	Managed       bool   `json:"managed"`
 	ConfExists    bool   `json:"conf_exists"`
+	Disabled      bool   `json:"disabled"`
 	TestPassed    bool   `json:"test_passed"`
 	TestSkipped   bool   `json:"test_skipped"`
 	TestOutput    string `json:"test_output,omitempty"`

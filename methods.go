@@ -53,66 +53,14 @@ func dispatch(request *pluginapi.Request, cfg config, logger *slog.Logger) (*plu
 	return response, false
 }
 
-// handleSiteVerb 执行站点方法：create/delete 走"落盘 → nginx -t → reload"闭环，
-// list/status 返回真实生效状态；所有 nginx 命令都是固定 argv，入参只参与路径生成。
-func handleSiteVerb(verb string, params json.RawMessage, response *pluginapi.Response) *pluginapi.Error {
-	if verb == "list" {
-		svc, perr := newSiteService()
-		if perr != nil {
-			return perr
-		}
-		result, perr := svc.list()
-		if perr != nil {
-			return perr
-		}
-		response.Result = encode(result)
-		return nil
-	}
-
-	p, perr := parseSiteParams(params)
-	if perr != nil {
-		return perr
-	}
-	svc, perr := newSiteService()
-	if perr != nil {
-		return perr
-	}
-	switch verb {
-	case "create":
-		result, perr := svc.create(p)
-		if perr != nil {
-			return perr
-		}
-		response.Result = encode(result)
-		return nil
-	case "delete":
-		result, perr := svc.delete(p.Domain)
-		if perr != nil {
-			return perr
-		}
-		response.Result = encode(result)
-		return nil
-	case "status":
-		result, perr := svc.status(p.Domain)
-		if perr != nil {
-			return perr
-		}
-		response.Result = encode(result)
-		return nil
-	default:
-		return notFound(verb)
-	}
-}
-
-// businessVerb 把 <id>.<verb> 或裸 <verb> 归一为动词名。
+// businessVerb 把 <id>.<verb> 或裸 <verb> 归一为动词名，合法性以 verbRegistry 为准
+// （方法清单只有一份，新增能力不会漏改分发逻辑）。
 func businessVerb(method, id string) (string, bool) {
 	verb := strings.TrimPrefix(method, id+".")
-	switch verb {
-	case "list", "create", "delete", "status":
+	if _, ok := verbRegistry[verb]; ok {
 		return verb, true
-	default:
-		return "", false
 	}
+	return "", false
 }
 
 // parseSiteParams 校验站点方法入参：对象形状、domain 合法性、禁止 default_server。
