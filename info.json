@@ -1,7 +1,7 @@
 {
   "id": "site",
   "name": "Nginx 站点管理插件",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "protocol": "kore.plugin.v1",
   "lifecycle": "resident",
   "depth_level": "production",
@@ -30,7 +30,8 @@
     "site.config.set": "system:admin",
     "site.clone": "system:admin",
     "site.setPassword": "system:admin",
-    "site.clearPassword": "system:admin"
+    "site.clearPassword": "system:admin",
+    "site.traffic": "system:read"
   },
   "triggers": [],
   "requires_kore": ">=0.1.0 <0.2.0",
@@ -45,5 +46,5 @@
     "web",
     "ops"
   ],
-  "size_bytes": 1590583
+  "size_bytes": 1610175
 }

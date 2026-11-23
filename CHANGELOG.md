@@ -2,6 +2,25 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.4.2] - 2026-11-23
+
+### 新增
+
+- `site.traffic {domain, log_path?, lines?}`：只读站点流量统计，解析 nginx **combined** access_log。
+  数据源优先级：显式 `log_path` > vhost 里的 `access_log` 指令 > 约定路径
+  `/var/log/nginx/<domain>.access.log` > `/var/log/nginx/access.log`。
+  返回总请求数、发送字节、独立 IP 数、时间窗口、状态码分类（2xx/3xx/4xx/5xx）、热门路径 Top10、
+  请求 IP Top10，并按实际解析行数如实给出 `parsed` / `skipped`。
+- **只读且不伪造**：只读日志末尾最多 4 MiB（`lines` 1..5000，默认 500），不写任何文件、不联网、
+  不起定时器（G-19）。读不到日志时返回 `available=false` + `reason`（`no_log_file` /
+  `permission_denied` / `no_entries`）+ `tried` 路径列表 + 可操作 hint（如何加 access_log 或修权限），
+  不返回任何编造数字。
+- 安全：`log_path` 只允许 `/var/log/` 与 `KORE_STATE_DIR` 内的文件，拒绝相对路径与 `..`，
+  避免插件变成任意文件读取器。
+- `method_capabilities` 补 `site.traffic = system:read`（只读分类表同步）；单测覆盖解析统计、
+  无法解析行计数、非法路径拒绝、三种空态。
+- 版本 0.4.1 → 0.4.2；manifest.json 同步。
+
 ## [0.4.1] - 2026-11-23
 
 ### 新增
