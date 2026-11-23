@@ -26,6 +26,10 @@ type siteInfo struct {
 	ReloadSkipped bool `json:"reload_skipped"`
 	// TestOutput 是 nginx -t 的真实失败摘要（仅测过且失败时非空）。
 	TestOutput string `json:"test_output,omitempty"`
+	// OutsideInstall 为 true 表示站点根落在安装目录之外（零侵入边界外），
+	// 只读提示可用 site.move 迁入；插件不会自动搬迁。
+	OutsideInstall     bool   `json:"outside_install,omitempty"`
+	OutsideInstallHint string `json:"outside_install_hint,omitempty"`
 }
 
 // nginxStatus 是所有业务结果统一披露的命令层模式：
@@ -99,6 +103,9 @@ type siteStatusResult struct {
 	LoadChecked   bool   `json:"load_checked"`
 	// ReloadSkipped 表示未执行 nginx -T 探测（未配置 nginx 或显式关闭）。
 	ReloadSkipped bool `json:"reload_skipped"`
+	// OutsideInstall / OutsideInstallHint：站点根在安装目录外时的只读提示（不自动搬迁）。
+	OutsideInstall     bool   `json:"outside_install,omitempty"`
+	OutsideInstallHint string `json:"outside_install_hint,omitempty"`
 }
 
 // siteParams 是站点方法的入参。DefaultServer 仅用于识别并拒绝抢占默认站点；

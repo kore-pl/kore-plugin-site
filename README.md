@@ -32,6 +32,7 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | `site.clone` / `clone` | 克隆站点 `{source_domain, new_domain, root?, copy_root?}`：复制 vhost 全量配置（SSL/伪静态/反代/重定向/index）；`copy_root=true` 仅复制 `KORE_STATE_DIR` 内的站点根（ADR-0023）。 |
 | `site.setPassword` / `clearPassword` | 站点级 Basic 认证：`setPassword {domain, username, password}` 写入 apr1 哈希到 vhost 同目录 htpasswd（密码不回显）；`clearPassword {domain}` 移除 auth 段并删除密码文件。 |
 | `site.traffic` / `traffic` | 只读流量统计：解析 nginx combined access_log（显式 `log_path` > vhost `access_log` > `/var/log/nginx/<domain>.access.log`），返回请求数/字节/独立 IP/状态码分类/热门路径与 IP；读不到日志返回 `available=false` + reason + hint，不编数据。 |
+| 默认站点根 | 未显式传 `root` 时用 `$KORE_PLUGIN_DATA/sites/<domain>`（内核注入；未注入时回退 `/var/www/<domain>` 并打 WARN）；`status`/`list` 对安装目录外的站点根返回 `outside_install` + 迁移提示，不自动搬迁。 |
 | `site.config.get` / `config.get` | 返回 4 个配置项的 schema、当前值与来源（`file` / `env` / `default`）。只读。 |
 | `site.config.set` / `config.set` | 校验 → 原子写 `<KORE_STATE_DIR>/config.json`（0600）→ 下一次调用立即生效（`restart_required=false`）。 |
 | `kore.ping` / `kore.reload` / `kore.shutdown` | 协议必选方法；`kore.reload` 无外部配置，`config_digest` 为空。 |

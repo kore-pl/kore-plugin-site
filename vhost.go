@@ -129,8 +129,9 @@ func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Erro
 		return "", "", false, internalErr("创建 conf.d 目录失败: " + err.Error())
 	}
 	root := p.Root
+	explicitRoot := root != ""
 	if root == "" {
-		root = fmt.Sprintf(defaultRoot, p.Domain)
+		root, _ = defaultSiteRoot(p.Domain)
 	}
 	port := p.Port
 	if port == 0 {
@@ -150,10 +151,13 @@ func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Erro
 	previous, existed := m.Sites[p.Domain]
 	content := vhostTemplate(p.Domain, root, port)
 	if existed && previous == path {
-		// 覆盖已有托管站点时保留 L2 状态（SSL/伪静态/反代/重定向/index），
-		// 只更新 root/port——否则"重新建站"会把证书与反代配置冲掉。
+		// 覆盖已有托管站点时保留 L2 状态（SSL/伪静态/反代/重定向/index）。
+		// root 同理：**没显式写 root 就保留旧根**，绝不因为默认值变化把线上站点根搬走（阶段 C）。
 		if old, readErr := os.ReadFile(path); readErr == nil {
 			st := parseSiteState(p.Domain, string(old))
+			if !explicitRoot {
+				root = st.Root
+			}
 			st.Root, st.Port = root, port
 			content = renderVHost(st)
 		}
@@ -364,13 +368,21 @@ func (s *vhostStore) list() ([]siteInfo, *pluginapi.Error) {
 				disabled = true
 			}
 		}
-		sites = append(sites, siteInfo{
+		info := siteInfo{
 			Domain:    domain,
 			VHostPath: path,
 			Enabled:   enabled,
 			Disabled:  disabled,
 			Exists:    enabled || disabled,
-		})
+		}
+		if content, err := os.ReadFile(path); err == nil {
+			root := parseRootDirective(string(content))
+			if siteRootOutsideInstall(root) {
+				info.OutsideInstall = true
+				info.OutsideInstallHint = outsideInstallHint()
+			}
+		}
+		sites = append(sites, info)
 	}
 	return sites, nil
 }

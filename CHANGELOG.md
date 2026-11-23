@@ -2,6 +2,23 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.4.3] - 2026-11-23
+
+### 变更
+
+- **消费 ADR-0023 阶段 C 插件数据根**：未显式指定 `root` 时，默认站点根改为
+  `$KORE_PLUGIN_DATA/sites/<domain>`（内核注入，落在安装目录内、属主 `kore-site`）；
+  未注入该变量时回退历史默认 `/var/www/<domain>`，并向 stderr 打一条 WARN 说明"非零侵入模式"
+  （不静默降级）。显式配置（`site.create` / `site.clone` 传入的 `root`）永远优先，插件不改写。
+- **既有站点绝不迁移**：重复 `site.create` 未带 `root` 时保留原 vhost 里的根目录，不会因为默认值
+  变化把线上站点根搬走（回归测试 `TestExistingSiteRootNotMigrated`）。
+- 新增只读标记：`site.status` / `site.list` 在站点根位于 `KORE_INSTALL_DIR` 之外时返回
+  `outside_install: true` + `outside_install_hint`（提示可用 `site.move` 迁入）。**不实现自动搬迁**；
+  未注入 `KORE_INSTALL_DIR` 时无法判定，不误报。
+- 单测：有/无 `KORE_PLUGIN_DATA` 的默认根解析、显式 root 优先、旧站点保持、outside_install 标记
+  （含安装目录内外两种场景）。
+- 版本 0.4.2 → 0.4.3；manifest.json 同步。
+
 ## [0.4.2] - 2026-11-23
 
 ### 新增

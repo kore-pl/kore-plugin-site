@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -11,7 +10,7 @@ import (
 func parseSiteState(domain, content string) siteState {
 	st := siteState{
 		Domain:  domain,
-		Root:    fmt.Sprintf(defaultRoot, domain),
+		Root:    mustDefaultSiteRoot(domain),
 		Port:    defaultPort,
 		Index:   defaultIndexFiles(),
 		Rewrite: rewriteNone,

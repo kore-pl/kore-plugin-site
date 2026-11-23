@@ -67,10 +67,11 @@ func (s *siteService) status(domain string) (siteStatusResult, *pluginapi.Error)
 			content, err = disabled, nil
 		}
 	}
+	root := ""
 	switch {
 	case err == nil:
 		result.ConfExists = !result.Disabled
-		if root := parseRootDirective(string(content)); root != "" {
+		if root = parseRootDirective(string(content)); root != "" {
 			result.SiteDirState, result.SiteDirReason = probeSiteDir(s.runner, root)
 		} else {
 			result.SiteDirState = siteDirUnknown
@@ -86,6 +87,10 @@ func (s *siteService) status(domain string) (siteStatusResult, *pluginapi.Error)
 	}
 	// 兼容字段：只有确定存在才是 true；unknown 与 absent 都是 false（老调用方语义不变）。
 	result.SiteDirExists = result.SiteDirState == siteDirPresent
+	if siteRootOutsideInstall(root) {
+		result.OutsideInstall = true
+		result.OutsideInstallHint = outsideInstallHint()
+	}
 
 	testOutcome := s.runner.runTest()
 	result.TestSkipped = !testOutcome.ran
