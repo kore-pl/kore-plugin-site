@@ -29,6 +29,7 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | `site.unsetRedirect` / `unsetRedirect` | 按 `from_path` 删除重定向（不存在时幂等）。 |
 | `site.disable` / `site.enable` | 把 vhost 改名为 `.conf.disabled` / 改回 `.conf` 后 test+reload；配置不删。 |
 | `site.setIndex` / `setIndex` | 设置 `index` 指令，默认 `index.html index.htm index.php`。 |
+| `site.clone` / `clone` | 克隆站点 `{source_domain, new_domain, root?, copy_root?}`：复制 vhost 全量配置（SSL/伪静态/反代/重定向/index）；`copy_root=true` 仅复制 `KORE_STATE_DIR` 内的站点根（ADR-0023）。 |
 | `site.config.get` / `config.get` | 返回 4 个配置项的 schema、当前值与来源（`file` / `env` / `default`）。只读。 |
 | `site.config.set` / `config.set` | 校验 → 原子写 `<KORE_STATE_DIR>/config.json`（0600）→ 下一次调用立即生效（`restart_required=false`）。 |
 | `kore.ping` / `kore.reload` / `kore.shutdown` | 协议必选方法；`kore.reload` 无外部配置，`config_digest` 为空。 |

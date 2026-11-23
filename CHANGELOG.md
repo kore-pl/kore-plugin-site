@@ -2,6 +2,21 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.4.0] - 2026-11-23
+
+### 新增
+
+- `site.clone {source_domain, new_domain, root?, copy_root?}`：复制已托管站点的完整 vhost 配置
+  （server_name / root / SSL / 伪静态 / 反向代理 / 重定向 / index）到新域名；复用既有
+  `store.create`（原子写 + 清单 + 冲突保护）与 `applyEdit`（nginx -t → reload → 失败回滚）闭环。
+- `copy_root=true` 时递归复制站点根目录；按 ADR-0023 零侵入 / G-31，**源与目标目录都必须在
+  `KORE_STATE_DIR` 内**，拒绝符号链接与设备文件，上限 10 万文件 / 2 GiB；宿主 `/var/www`
+  请只克隆配置（copy_root=false）后由运维迁移。
+- 冲突语义：目标域名已托管 → `E_CONFLICT`（不覆盖）；源站点不在清单 → `E_NOTFOUND`；
+  同域名克隆 → `E_INVALID`。
+- `method_capabilities` 补 `site.clone = system:admin`（写类）。
+- 版本 0.3.1 → 0.4.0；manifest.json 同步。
+
 ## [0.3.1] - 2026-11-23
 
 ### 修复（补全方法级 capability，§3.5 #12）
