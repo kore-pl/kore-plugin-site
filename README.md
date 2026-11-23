@@ -60,9 +60,11 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | --- | --- | --- |
 | 只读（4） | `list` / `status` / `get` / `getRewrite` | `system:read` |
 | 写（12） | `create` / `delete` / `bindSSL` / `unbindSSL` / `setRewrite` / `setProxy` / `unsetProxy` / `setRedirect` / `unsetRedirect` / `disable` / `enable` / `setIndex` | `system:admin` |
+| 配置契约（2） | `config.get` / `config.set` | 读 `system:read` / 写 `system:admin` |
 
-收益：只读调用按 `system:read` 判定，不再按插件级 `system:admin` 写 `invoke.*` 审计（§3.5 #12）；写方法仍按 admin 审计。`config.get` / `config.set` 暂未纳入方法级声明（回退插件级 `system:admin`），见 CHANGELOG 兼容说明。
-`method_capabilities` 与 `siteverbs.go` 的 `verbRegistry` 由单测双向断言（声明 ⊆ 实现、实现 ⊆ 声明），新增/删除方法时两处必须同改。
+收益：只读调用按 `system:read` 判定，不再按插件级 `system:admin` 写 `invoke.*` 审计（§3.5 #12）；写方法仍按 admin 审计。`config.get` / `config.set` 自 0.3.1 起也逐条声明（读=read、写=admin），**配置读取不再按 admin 类进审计**。
+
+`config.*` 由 `methods.go` 的 `dispatch` 直接分发（配置面板通用契约），不实现 `verbHandler`、**不注册进 `verbRegistry`**。单测因此分两组断言：业务方法（16 条）与 `verbRegistry` 双向对齐（声明 ⊆ 实现、实现 ⊆ 声明），`config.*`（2 条）单独断言「必须存在且读=read、写=admin」；另有一条防回归断言要求每个声明键都以 `site.` 为域。新增/删除方法时 info.json 与对应实现必须同改。
 
 ## L2 能力（可用）：SSL / 伪静态 / 反代 / 重定向 / 启停 / index
 

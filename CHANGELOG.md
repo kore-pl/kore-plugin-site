@@ -2,6 +2,22 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.3.1] - 2026-11-23
+
+### 修复（补全方法级 capability，§3.5 #12）
+
+- **补 `config.get` / `config.set` 方法级声明**：`site.config.get = system:read`、`site.config.set = system:admin`。0.3.0 只声明了 16 个业务方法，`config.*` 未声明时内核回退插件级 `capabilities`（`system:admin`），于是**配置读取也按 admin 类写 `invoke.*` 审计**——本次补齐后 `config.get` 按 `system:read` 判定，**配置读取不再进 admin 审计**；`config.set` 仍为 admin。
+- `method_capabilities` 16 → 18 条。内核侧无需改动：`validate.go` 的键域校验（`<id>.<action>`）、动作段规则（`^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)*$`，天然接受 `config.get` 这种点分动作）与 6 项特权白名单，及 `invoke_capability.go` 的取用顺序（方法级命中优先、未命中回退插件级）本来就覆盖这两条。
+- 版本号 0.3.0 → 0.3.1（patch：只补 capability 声明与版本元数据，不改任何业务逻辑——三态 `site_dir_state` / `site_dir_reason` 与 16 个 verb 行为保持 0.3.0 原样），`manifest.json`（内嵌 manifest）同步 bump。
+
+### 测试
+
+- `methodcaps_test.go` 断言拆成两组，对应插件里两条真实分发路径：
+  - 业务方法（16 条）：继续与 `siteverbs.go` 的 `verbRegistry` 双向对齐（声明 ⊆ 实现、实现 ⊆ 声明）+ 锁定只读/写分类；
+  - `config.*`（2 条）：单独断言「必须存在且 `get=system:read`、`set=system:admin`」。config 由 `methods.go` 的 `dispatch` 直接分发（配置面板通用契约）、不实现 `verbHandler`，**不塞进 `verbRegistry`**，否则分发 switch 与注册表会出现两个事实来源。
+- 新增防回归断言 `TestMethodCapabilitiesDomainScoped`：`info.json` 声明的每个键都必须以 `site.` 为域（内核该条 fail-closed，写错一个键整份清单加载失败）。
+- 反例验证（干净树复现）：新断言 + 0.3.0 的 `info.json`（16 条）→ `FAIL: 声明 16 条，期望 18 条`；旧断言 + 0.3.1 的 `info.json`（18 条）→ `FAIL: 声明 18 条，期望 16 条`——证明断言必须拆组，不能靠把 config 塞进 verbRegistry 过关。
+
 ## [0.3.0] - 2026-11-23
 
 ### 新增（方法级 capability，§3.5 #12）

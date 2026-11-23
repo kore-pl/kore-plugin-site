@@ -1,7 +1,7 @@
 {
   "id": "site",
   "name": "Nginx 站点管理插件",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "protocol": "kore.plugin.v1",
   "lifecycle": "resident",
   "depth_level": "production",
@@ -23,7 +23,9 @@
     "site.unsetRedirect": "system:admin",
     "site.disable": "system:admin",
     "site.enable": "system:admin",
-    "site.setIndex": "system:admin"
+    "site.setIndex": "system:admin",
+    "site.config.get": "system:read",
+    "site.config.set": "system:admin"
   },
   "triggers": [],
   "requires_kore": ">=0.1.0 <0.2.0",
@@ -31,5 +33,5 @@
   "depends_on": [],
   "conflicts": [],
   "scenario_tags": ["web", "ops"],
-  "size_bytes": 1537557
+  "size_bytes": 1537532
 }

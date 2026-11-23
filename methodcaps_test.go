@@ -10,7 +10,21 @@ import (
 // expectedBusinessMethods 是本仓业务方法总数（docs/PLUGIN-MATURITY.md §2 site 行：16）。
 const expectedBusinessMethods = 16
 
-// expectedReadMethods 是本仓只读方法清单；其余业务方法必须是 system:admin。
+// expectedConfigMethods 是配置面板通用契约的两个方法：由 methods.go 的 dispatch 直接分发
+// （`<id>.config.get` / `<id>.config.set`），**不走 verbRegistry**。
+//
+// 因此它们单独成组断言（必须存在、读=read、写=admin），而不是与 verb 做双向对齐：
+// 把 config.* 塞进 verbRegistry 只为了让「双向断言」通过，会让分发 switch 与注册表
+// 变成两个事实来源，且 config 方法并不实现 verbHandler 签名——那是错的修法。
+var expectedConfigMethods = map[string]string{
+	"config.get": "system:read",
+	"config.set": "system:admin",
+}
+
+// expectedTotalMethods 是 info.json 应有的声明条数：16 业务 + 2 config。
+const expectedTotalMethods = expectedBusinessMethods + 2
+
+// expectedReadMethods 是本仓只读业务方法清单；其余业务方法必须是 system:admin。
 // 这张表是"只读 / 写"分类的验收依据：把写方法误降为 read 会让只读会话获得写权限。
 var expectedReadMethods = map[string]struct{}{
 	"list": {}, "status": {}, "get": {}, "getRewrite": {},
@@ -46,8 +60,12 @@ func loadManifestDecl(t *testing.T, path string) manifestDeclFields {
 	return decl
 }
 
-// TestMethodCapabilitiesMatchVerbRegistry 防止「info.json 声明」与「siteverbs.go 实现」漂移：
-// 双向断言（声明 ⊆ 实现、实现 ⊆ 声明），并锁定只读 / 写分类。
+// TestMethodCapabilitiesMatchVerbRegistry 防止「info.json 声明」与「实现」漂移。
+//
+// 断言分两组，对应插件里两条真实分发路径：
+//  1. 业务方法（16 条）：与 siteverbs.go 的 verbRegistry 双向对齐（声明 ⊆ 实现、实现 ⊆ 声明），
+//     并锁定只读 / 写分类；
+//  2. config.*（2 条）：不与 verbRegistry 对齐，只断言「必须存在」且「get=read、set=admin」。
 func TestMethodCapabilitiesMatchVerbRegistry(t *testing.T) {
 	info := loadManifestDecl(t, "info.json")
 	if info.ID != "site" {
@@ -57,39 +75,82 @@ func TestMethodCapabilitiesMatchVerbRegistry(t *testing.T) {
 		t.Fatalf("verbRegistry 有 %d 个 verb，期望 %d：新增/删除方法必须同步 info.json 与能力分类",
 			len(verbRegistry), expectedBusinessMethods)
 	}
-	if len(info.MethodCapabilities) != expectedBusinessMethods {
-		t.Fatalf("method_capabilities 声明 %d 条，期望 %d 条（每个业务方法都必须有方法级能力）",
-			len(info.MethodCapabilities), expectedBusinessMethods)
+	if len(info.MethodCapabilities) != expectedTotalMethods {
+		t.Fatalf("method_capabilities 声明 %d 条，期望 %d 条（%d 业务方法 + %d config 契约方法）",
+			len(info.MethodCapabilities), expectedTotalMethods, expectedBusinessMethods, len(expectedConfigMethods))
 	}
 
-	declared := make(map[string]string, len(info.MethodCapabilities))
+	declaredBusiness := make(map[string]string, expectedBusinessMethods)
+	declaredConfig := make(map[string]string, len(expectedConfigMethods))
 	prefix := info.ID + "."
 	for method, capability := range info.MethodCapabilities {
 		action, ok := strings.CutPrefix(method, prefix)
 		if !ok || action == "" {
 			t.Fatalf("方法键 %q 必须以插件自身 id 为域（应为 %s<action>）", method, prefix)
 		}
-		if _, ok := verbRegistry[action]; !ok {
-			t.Fatalf("info.json 声明了 %q，但 siteverbs.go 的 verbRegistry 没有对应 verb（声明漂移）", method)
+		if _, ok := privilegedCapabilitySet[capability]; !ok {
+			t.Fatalf("%s 的能力值 %q 不是 6 项特权能力之一", method, capability)
 		}
-		declared[action] = capability
+		// 归类只看实现来源：verbRegistry 里有的算业务方法，否则必须落在 config 契约白名单内。
+		if _, isVerb := verbRegistry[action]; isVerb {
+			declaredBusiness[action] = capability
+			continue
+		}
+		if _, isConfig := expectedConfigMethods[action]; isConfig {
+			declaredConfig[action] = capability
+			continue
+		}
+		t.Fatalf("info.json 声明了 %q，但它既不在 siteverbs.go 的 verbRegistry，也不在 config 契约方法清单（声明漂移）", method)
+	}
+
+	// 组 1（业务方法）：双向对齐 + 只读 / 写分类。
+	if len(declaredBusiness) != expectedBusinessMethods {
+		t.Fatalf("业务方法声明 %d 条，期望 %d 条（每个 verb 都必须有方法级能力）",
+			len(declaredBusiness), expectedBusinessMethods)
 	}
 	for verb := range verbRegistry {
-		if _, ok := declared[verb]; !ok {
+		if _, ok := declaredBusiness[verb]; !ok {
 			t.Fatalf("siteverbs.go 注册了 verb %q，但 info.json 的 method_capabilities 未声明（声明漂移）", verb)
 		}
 	}
-
-	for verb, capability := range declared {
-		if _, ok := privilegedCapabilitySet[capability]; !ok {
-			t.Fatalf("%s 的能力值 %q 不是 6 项特权能力之一", verb, capability)
-		}
+	for verb, capability := range declaredBusiness {
 		want := "system:admin"
 		if _, readOnly := expectedReadMethods[verb]; readOnly {
 			want = "system:read"
 		}
 		if capability != want {
 			t.Fatalf("verb %q 的能力=%q，期望 %q（只读方法只能 read，写方法必须 admin）", verb, capability, want)
+		}
+	}
+
+	// 组 2（config 契约）：必须存在且读=read、写=admin。
+	if len(declaredConfig) != len(expectedConfigMethods) {
+		t.Fatalf("config 契约方法声明 %d 条，期望 %d 条（config.get / config.set 必须逐条声明）",
+			len(declaredConfig), len(expectedConfigMethods))
+	}
+	for action, want := range expectedConfigMethods {
+		got, ok := declaredConfig[action]
+		if !ok {
+			t.Fatalf("info.json 缺少 %s%s 的方法级声明：未声明会回退插件级 capabilities（system:admin），配置读取会按 admin 进审计", prefix, action)
+		}
+		if got != want {
+			t.Fatalf("config 方法 %q 的能力=%q，期望 %q（读=read，写=admin）", action, got, want)
+		}
+	}
+}
+
+// TestMethodCapabilitiesDomainScoped 防回归：每个声明的键都必须以插件自身 id 为域
+// （`<id>.<action>`）。内核 validate.go 对该条 fail-closed——写错一个键，整份清单加载失败、
+// 插件不可安装，因此在提交前用单测拦住。
+func TestMethodCapabilitiesDomainScoped(t *testing.T) {
+	info := loadManifestDecl(t, "info.json")
+	prefix := info.ID + "."
+	for method := range info.MethodCapabilities {
+		if !strings.HasPrefix(method, prefix) {
+			t.Fatalf("方法键 %q 未以插件自身 id 为域：必须以 %q 开头", method, prefix)
+		}
+		if action := strings.TrimPrefix(method, prefix); action == "" || strings.HasPrefix(action, ".") {
+			t.Fatalf("方法键 %q 的动作段为空或以点开头", method)
 		}
 	}
 }
