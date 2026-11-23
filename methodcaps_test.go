@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// expectedBusinessMethods 是本仓业务方法总数（0.3.x 的 16 个 + 0.4.0 新增 clone = 17）。
-const expectedBusinessMethods = 17
+// expectedBusinessMethods 是本仓业务方法总数（0.3.x 的 16 个 + 0.4.0 clone + 0.4.1 setPassword/clearPassword = 19）。
+const expectedBusinessMethods = 19
 
 // expectedConfigMethods 是配置面板通用契约的两个方法：由 methods.go 的 dispatch 直接分发
 // （`<id>.config.get` / `<id>.config.set`），**不走 verbRegistry**。

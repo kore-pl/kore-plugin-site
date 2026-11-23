@@ -30,6 +30,7 @@ func parseSiteState(domain, content string) siteState {
 	st.Rewrite = parseRewriteTemplate(blocks)
 	st.Proxy = parseProxyState(blocks)
 	st.Redirects = parseRedirectRules(blocks)
+	st.Auth = parseAuthState(content)
 	return st
 }
 

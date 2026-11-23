@@ -52,6 +52,7 @@ type siteState struct {
 	Rewrite   string
 	Proxy     *proxyState
 	Redirects []redirectRule
+	Auth      *authState
 }
 
 // disabledSuffix 是停用站点的 vhost 后缀：conf.d/*.conf 不会匹配它，

@@ -24,6 +24,7 @@ func renderVHost(st siteState) []byte {
 	if len(st.Index) > 0 {
 		b.WriteString("    index " + strings.Join(st.Index, " ") + ";\n")
 	}
+	writeAuthBlock(&b, st)
 	writeContentBlock(&b, st)
 	for _, rule := range st.Redirects {
 		writeRedirectBlock(&b, rule)

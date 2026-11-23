@@ -2,6 +2,22 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.4.1] - 2026-11-23
+
+### 新增
+
+- `site.setPassword {domain, username, password}` / `site.clearPassword {domain}`：站点级
+  HTTP Basic 认证。密码只以 **Apache apr1（MD5-crypt，`$apr1$`）哈希**写入 vhost 同目录的
+  `kore-site-<domain>.htpasswd`（0644，nginx worker 可读）；明文不落盘、不进 vhost、不进任何返回体，
+  返回只给 `enabled` / `username` / `changed` / `hash_scheme` 与生效状态。
+- vhost 改动复用 `applyEdit` 的「原子写 → nginx -t → reload → 失败回滚」闭环；auth 段是受管注释块
+  （`kore-site:auth`），清除即整段移除并删除密码文件。设置失败会同时回滚 vhost 与 htpasswd。
+- 幂等：同用户同密码不重写 vhost、不触发 reload（复用旧盐重算校验）；重复清除返回 `changed=false`。
+- 口令策略：密码 8..128 字符、拒绝换行/NUL；用户名 1..32 位字母数字与 `._-`，字母数字开头。
+- `method_capabilities` 补 `site.setPassword` / `site.clearPassword = system:admin`；
+  单测覆盖设置、清除、幂等、弱口令拒绝与**返回体不回显密码/哈希**，并用 openssl apr1 向量对照哈希实现。
+- 版本 0.4.0 → 0.4.1；manifest.json 同步。
+
 ## [0.4.0] - 2026-11-23
 
 ### 新增
