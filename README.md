@@ -16,9 +16,9 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | --- | --- |
 | `site.create` / `create` | 写 vhost + 清单 → `nginx -t` → `nginx -s reload`；返回 `vhost_path` / `backup_path` / `test_passed` / `reloaded` / `applied`。校验失败回滚，重载失败回 `E_UPSTREAM`。 |
 | `site.delete` / `delete` | 备份并删除 vhost + 清单 → `nginx -t` → `nginx -s reload`；任一失败恢复删除前状态。 |
-| `site.status` / `status` | 返回 `conf_exists` / `test_passed` / `test_skipped` / `site_dir_exists` / `loaded` / `load_checked` / `reload_skipped` / `managed`。只读，不 reload。 |
+| `site.status` / `status` | 返回 `conf_exists` / `test_passed` / `test_skipped` / `site_dir_state`（`present` / `absent` / `unknown`）/ `site_dir_exists`（兼容布尔，仅 `present` 为 true）/ `site_dir_reason`（unknown 的原因与处置）/ `loaded` / `load_checked` / `reload_skipped` / `managed`。只读，不 reload。 |
 | `site.list` / `list` | 每条带 `exists` / `enabled` / `disabled` / `test_ok` / `test_skipped` / `reloaded` / `reload_skipped` / `test_output` 真实状态；`nginx -t` 与 `nginx -T` 各只跑一次。 |
-| `site.get` / `get` | 完整配置摘要：`root` / `port` / `index` / `ssl` / `rewrite` / `proxy` / `redirects` / `enabled`。只读，不 reload。 |
+| `site.get` / `get` | 完整配置摘要：`root` / `port` / `index` / `ssl` / `rewrite` / `proxy` / `redirects` / `enabled`，以及与 `status` 同口径的 `site_dir_state` / `site_dir_exists` / `site_dir_reason`。只读，不 reload。 |
 | `site.bindSSL` / `bindSSL` | 在 vhost 内写 `listen 443 ssl` + 证书 + TLS1.2+ 套件，默认附 80→443 跳转；`force_https=false` 时 80/443 并存。 |
 | `site.unbindSSL` / `unbindSSL` | 移除整个 SSL 块（含 443 监听与跳转），站点回到纯 HTTP。 |
 | `site.setRewrite` / `setRewrite` | 伪静态模板枚举 `none \| wordpress \| laravel \| thinkphp \| discuz \| nextjs`，整块替换。 |
@@ -37,10 +37,32 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 
 所有写操作与 `list` / `status` 结果都带 `nginx_mode`（`host` / `docker` / `off`）与 `nginx_reason`（跳过原因）。真实探测落空时 `nginx_reason="未检测到 nginx（宿主与容器都没有）"`，前端可据此把「未检测」渲染成「为什么没检测」，而不是一个灰点。
 
-**已知限制**：容器模式下 `site.status.site_dir_exists` 仍只检查**宿主**路径（vhost 里的 `root` 是容器内路径）。要确认容器内站点目录，用 `docker exec <container> test -d <root>`；插件不在只读方法里额外执行容器命令。
+**站点目录三态**：vhost 里的 `root` 在容器模式下是**容器内路径**，宿主 `os.Stat` 会把它误判成「不存在」。因此 `site.status` 与 `site.get` 统一用三态表达：
+
+| `site_dir_state` | 含义 | `site_dir_exists`（兼容字段） |
+| --- | --- | --- |
+| `present` | 确认存在 | `true` |
+| `absent` | 确认不存在（`test -d` 无输出退出 1 / 宿主 `ENOENT` / 存在但不是目录） | `false` |
+| `unknown` | **查不到**：docker 不可用、容器未运行、命令超时、vhost 无 `root` 指令、宿主读取失败 | `false` |
+
+`unknown` 时 `site_dir_reason` 给出原因与处置（例如「安装 docker 或把 `nginx_mode` 改为 host」）。前端必须区分「未知」与「不存在」——**`unknown` 不得渲染成「目录不存在」，更不得据此提示删除站点**。
+容器模式判定用 `docker exec <container> test -d <root>`（argv 固定、不经 shell、20s 超时）：退出码 0 = `present`；退出码 1 且无任何输出 = `absent`；其余（daemon 报错、125/126、启动失败、超时）= `unknown`。
 
 `domain` 约束：小写、每个标签以字母数字开头结尾、至少两个标签、总长 ≤ 253；拒绝路径分隔符与 `..`，防止 vhost 路径穿越。
+
 `root` 约束：绝对路径、无冗余分量、仅允许 `A-Za-z0-9._/@+-`，拒绝空白/分号/花括号/换行等配置注入字符。
+
+## 方法级能力（method_capabilities）
+
+`info.json` 逐方法声明宿主特权能力（协议见 `docs/PLUGIN-PROTOCOL.md` §3.1.2.1，格式照 `kore-plugin-cron` / `kore-plugin-waf`）：内核按方法取用，命中即单独生效，未声明的方法回退插件级 `capabilities`。
+
+| 类别 | 方法 | 能力 |
+| --- | --- | --- |
+| 只读（4） | `list` / `status` / `get` / `getRewrite` | `system:read` |
+| 写（12） | `create` / `delete` / `bindSSL` / `unbindSSL` / `setRewrite` / `setProxy` / `unsetProxy` / `setRedirect` / `unsetRedirect` / `disable` / `enable` / `setIndex` | `system:admin` |
+
+收益：只读调用按 `system:read` 判定，不再按插件级 `system:admin` 写 `invoke.*` 审计（§3.5 #12）；写方法仍按 admin 审计。`config.get` / `config.set` 暂未纳入方法级声明（回退插件级 `system:admin`），见 CHANGELOG 兼容说明。
+`method_capabilities` 与 `siteverbs.go` 的 `verbRegistry` 由单测双向断言（声明 ⊆ 实现、实现 ⊆ 声明），新增/删除方法时两处必须同改。
 
 ## L2 能力（可用）：SSL / 伪静态 / 反代 / 重定向 / 启停 / index
 
@@ -73,7 +95,7 @@ L2 配置的**唯一事实来源就是 vhost 文件本身**：受管片段用注
 - RPC 入参（`domain` / `root` / `port`）只参与文件路径与已校验的模板，**永不进入 argv**。
 - 每条命令（含 `docker exec` / `docker inspect`）都有 20s 超时；进入错误消息的输出截断到 4096 字符。
 - **写路径前置校验**（仅 docker 模式）：宿主 `host_conf_dir` 必须存在且可写 → 容器必须存在（`docker inspect` 失败回 `E_UPSTREAM`）→ 容器内 `docker_conf_dir` 必须确实由该宿主目录挂载而来（否则 `E_INVALID` 并给出应改成的路径）。这样不会出现「配置写成功但容器读不到」的假生效。
-- 只读方法（`list` / `status`）不做额外 `docker inspect`：容器不存在时由 `nginx -t` 的真实失败出现在 `test_output` 里（不是静默 skipped），不因一次查看而放大容器调用。
+- 只读方法（`list` / `status`）不做额外 `docker inspect`：容器不存在时由 `nginx -t` 的真实失败出现在 `test_output` 里（不是静默 skipped），不因一次查看而放大容器调用。`status` 在 docker 模式只额外执行一次目录探测 `docker exec <container> test -d <root>`（20s 超时，用于三态 `site_dir_state`）。
 
 ## 环境变量
 

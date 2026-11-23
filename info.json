@@ -1,17 +1,35 @@
 {
   "id": "site",
   "name": "Nginx 站点管理插件",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "protocol": "kore.plugin.v1",
   "lifecycle": "resident",
   "depth_level": "production",
   "entry": "bin/site",
   "capabilities": ["system:admin"],
+  "method_capabilities": {
+    "site.list": "system:read",
+    "site.create": "system:admin",
+    "site.delete": "system:admin",
+    "site.status": "system:read",
+    "site.get": "system:read",
+    "site.bindSSL": "system:admin",
+    "site.unbindSSL": "system:admin",
+    "site.setRewrite": "system:admin",
+    "site.getRewrite": "system:read",
+    "site.setProxy": "system:admin",
+    "site.unsetProxy": "system:admin",
+    "site.setRedirect": "system:admin",
+    "site.unsetRedirect": "system:admin",
+    "site.disable": "system:admin",
+    "site.enable": "system:admin",
+    "site.setIndex": "system:admin"
+  },
   "triggers": [],
   "requires_kore": ">=0.1.0 <0.2.0",
   "resources": {"memory_mb": 8, "cpu_quota": "20%", "pids_max": 32},
   "depends_on": [],
   "conflicts": [],
   "scenario_tags": ["web", "ops"],
-  "size_bytes": 1524718
+  "size_bytes": 1537557
 }

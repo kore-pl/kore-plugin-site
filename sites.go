@@ -78,15 +78,23 @@ type siteDeleteResult struct {
 // 让调用方一眼看出"是文件没写、配置不合法、目录缺失，还是没被 nginx 加载"。
 type siteStatusResult struct {
 	nginxStatus
-	Domain        string `json:"domain"`
-	VHostPath     string `json:"vhost_path"`
-	Managed       bool   `json:"managed"`
-	ConfExists    bool   `json:"conf_exists"`
-	Disabled      bool   `json:"disabled"`
-	TestPassed    bool   `json:"test_passed"`
-	TestSkipped   bool   `json:"test_skipped"`
-	TestOutput    string `json:"test_output,omitempty"`
-	SiteDirExists bool   `json:"site_dir_exists"`
+	Domain      string `json:"domain"`
+	VHostPath   string `json:"vhost_path"`
+	Managed     bool   `json:"managed"`
+	ConfExists  bool   `json:"conf_exists"`
+	Disabled    bool   `json:"disabled"`
+	TestPassed  bool   `json:"test_passed"`
+	TestSkipped bool   `json:"test_skipped"`
+	TestOutput  string `json:"test_output,omitempty"`
+	// SiteDirExists 是兼容字段：true 当且仅当 SiteDirState == "present"。
+	// 容器模式下宿主的 os.Stat 会把「容器内存在」误判成 false，需要区分「未知」时
+	// 读 SiteDirState（§3.5 #6）。
+	SiteDirExists bool `json:"site_dir_exists"`
+	// SiteDirState 是三态：present / absent / unknown。unknown 表示查不到
+	// （docker 不可用、容器异常、root 无法解析），**不等于**目录不存在。
+	SiteDirState string `json:"site_dir_state"`
+	// SiteDirReason 只在 unknown 时给出「为什么查不到 + 怎么办」，present/absent 为空。
+	SiteDirReason string `json:"site_dir_reason,omitempty"`
 	Loaded        bool   `json:"loaded"`
 	LoadChecked   bool   `json:"load_checked"`
 	// ReloadSkipped 表示未执行 nginx -T 探测（未配置 nginx 或显式关闭）。

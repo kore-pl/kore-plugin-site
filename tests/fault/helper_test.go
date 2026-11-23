@@ -74,6 +74,13 @@ func findBinary(t *testing.T) string {
 // sh -c 'ulimit -v' 限制地址空间（等价 cgroup 内存超限的进程侧表现）。
 func startPlugin(t *testing.T, binary, confDir string, memLimitKB int) (*exec.Cmd, func() net.Conn) {
 	t.Helper()
+	return startPluginWithEnv(t, binary, confDir, memLimitKB, nil)
+}
+
+// startPluginWithEnv 同 startPlugin，并额外注入 env（容器模式 / 降级路径用例）。
+// env 覆盖同名默认值：按 map 合并后整体下发，避免 exec 收到重复键。
+func startPluginWithEnv(t *testing.T, binary, confDir string, memLimitKB int, env map[string]string) (*exec.Cmd, func() net.Conn) {
+	t.Helper()
 	sock := filepath.Join(t.TempDir(), "kore.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -88,16 +95,27 @@ func startPlugin(t *testing.T, binary, confDir string, memLimitKB int) (*exec.Cm
 	} else {
 		cmd = exec.Command(binary)
 	}
-	cmd.Env = append(os.Environ(),
-		"KORE_PLUGIN_SOCK="+sock,
-		"KORE_LOG_LEVEL=error",
-		"KORE_SITE_CONF_DIR="+confDir,
-		// 故障注入不依赖宿主是否装了 nginx：命令层用 true 桩，
-		// 保留 create 的完整"校验 → 重载"链路（true 忽略追加的固定旗标）。
-		"KORE_NGINX_TEST_CMD=true",
-		"KORE_NGINX_RELOAD_CMD=true",
-		"KORE_NGINX_DUMP_CMD=true",
-	)
+	merged := map[string]string{}
+	for _, kv := range os.Environ() {
+		if key, value, ok := strings.Cut(kv, "="); ok {
+			merged[key] = value
+		}
+	}
+	merged["KORE_PLUGIN_SOCK"] = sock
+	merged["KORE_LOG_LEVEL"] = "error"
+	merged["KORE_SITE_CONF_DIR"] = confDir
+	// 故障注入不依赖宿主是否装了 nginx：命令层用 true 桩，
+	// 保留 create 的完整"校验 → 重载"链路（true 忽略追加的固定旗标）。
+	merged["KORE_NGINX_TEST_CMD"] = "true"
+	merged["KORE_NGINX_RELOAD_CMD"] = "true"
+	merged["KORE_NGINX_DUMP_CMD"] = "true"
+	for key, value := range env {
+		merged[key] = value
+	}
+	cmd.Env = make([]string, 0, len(merged))
+	for key, value := range merged {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
 	if err := cmd.Start(); err != nil {
 		_ = ln.Close()
 		t.Fatalf("启动插件失败: %v", err)

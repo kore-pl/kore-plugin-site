@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"os"
 
 	"github.com/pengtang1024/kore/pkg/pluginapi"
 )
@@ -35,15 +34,20 @@ type redirectSummary struct {
 
 // siteGetResult 是 site.get 的完整配置摘要（只读，不跑 nginx、不改文件）。
 type siteGetResult struct {
-	Domain        string            `json:"domain"`
-	VHostPath     string            `json:"vhost_path"`
-	Managed       bool              `json:"managed"`
-	Enabled       bool              `json:"enabled"`
-	Disabled      bool              `json:"disabled"`
-	Root          string            `json:"root"`
-	Port          int               `json:"port"`
-	Index         []string          `json:"index"`
-	SiteDirExists bool              `json:"site_dir_exists"`
+	Domain    string   `json:"domain"`
+	VHostPath string   `json:"vhost_path"`
+	Managed   bool     `json:"managed"`
+	Enabled   bool     `json:"enabled"`
+	Disabled  bool     `json:"disabled"`
+	Root      string   `json:"root"`
+	Port      int      `json:"port"`
+	Index     []string `json:"index"`
+	// SiteDirExists 是兼容字段：true 当且仅当 SiteDirState == "present"。
+	SiteDirExists bool `json:"site_dir_exists"`
+	// SiteDirState 是三态 present/absent/unknown（§3.5 #6，与 site.status 同口径）。
+	SiteDirState string `json:"site_dir_state"`
+	// SiteDirReason 只在 unknown 时给出原因与处置。
+	SiteDirReason string            `json:"site_dir_reason,omitempty"`
 	SSL           sslSummary        `json:"ssl"`
 	Rewrite       rewriteSummary    `json:"rewrite"`
 	Proxy         proxySummary      `json:"proxy"`
@@ -80,9 +84,8 @@ func getHandler(svc *siteService, raw json.RawMessage) (any, *pluginapi.Error) {
 		Rewrite:   rewriteSummary{Template: st.Rewrite},
 		Redirects: make([]redirectSummary, 0, len(st.Redirects)),
 	}
-	if info, err := os.Stat(st.Root); err == nil && info.IsDir() {
-		result.SiteDirExists = true
-	}
+	result.SiteDirState, result.SiteDirReason = probeSiteDir(svc.runner, st.Root)
+	result.SiteDirExists = result.SiteDirState == siteDirPresent
 	if st.SSL != nil {
 		result.SSL = sslSummary{
 			Bound:      true,

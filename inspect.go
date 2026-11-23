@@ -71,15 +71,21 @@ func (s *siteService) status(domain string) (siteStatusResult, *pluginapi.Error)
 	case err == nil:
 		result.ConfExists = !result.Disabled
 		if root := parseRootDirective(string(content)); root != "" {
-			if st, statErr := os.Stat(root); statErr == nil && st.IsDir() {
-				result.SiteDirExists = true
-			}
+			result.SiteDirState, result.SiteDirReason = probeSiteDir(s.runner, root)
+		} else {
+			result.SiteDirState = siteDirUnknown
+			result.SiteDirReason = "vhost 中未解析到 root 指令，无法判断站点目录"
 		}
 	case errors.Is(err, os.ErrNotExist):
-		// conf 不存在是合法观测值，不是服务错误。
+		// conf 不存在是合法观测值，不是服务错误；没有 root 指令可依据，
+		// 因此目录状态是 unknown（查不到依据），不是「不存在」。
+		result.SiteDirState = siteDirUnknown
+		result.SiteDirReason = "vhost 不存在，无法解析 root 指令，因此无法判断站点目录"
 	default:
 		return siteStatusResult{}, internalErr("读取 vhost 失败: " + err.Error())
 	}
+	// 兼容字段：只有确定存在才是 true；unknown 与 absent 都是 false（老调用方语义不变）。
+	result.SiteDirExists = result.SiteDirState == siteDirPresent
 
 	testOutcome := s.runner.runTest()
 	result.TestSkipped = !testOutcome.ran

@@ -2,6 +2,25 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.3.0] - 2026-11-23
+
+### 新增（方法级 capability，§3.5 #12）
+
+- `info.json` 新增 `method_capabilities`（16 条）：只读方法 `list` / `status` / `get` / `getRewrite` → `system:read`，其余 12 个写方法 → `system:admin`。内核按方法取用（`validate.go` 校验 + `invoke_capability.go` 取用），只读调用不再按 admin 类写 `invoke.*` 审计；未声明的方法仍回退插件级 `capabilities`。
+- 版本号 0.2.0 → 0.3.0（新增对外字段，minor），`manifest.json`（内嵌 manifest）同步 bump。
+- 兼容披露：`config.get` / `config.set` 本次未纳入方法级声明，仍回退插件级 `system:admin`（`config.get` 仍按 admin 判定）；如需一并下沉到 `system:read` / `system:admin`，另行发版。
+
+### 修复（容器模式站点目录三态，§3.5 #6）
+
+- `site.status` / `site.get` 新增 `site_dir_state` ∈ `present` / `absent` / `unknown` 与 `site_dir_reason`（仅 unknown 非空）；两处同口径。容器模式改用 `docker exec <container> test -d <root>` 判定（argv 固定、不经 shell、20s 超时）：退出码 0 = present；退出码 1 且无输出 = absent；docker daemon 报错 / 125-126 / 启动失败 / 超时 / vhost 无 root = unknown，不再把「查不到」误报成「目录不存在」。
+- 兼容策略：保留 `site_dir_exists` 布尔字段，取值恒为 `site_dir_state == "present"`，既有调用方语义不变（unknown 与 absent 都是 false）；需要区分「未知」与「不存在」的调用方读新字段。宿主模式判定不变（`os.Stat`：ENOENT / 非目录 = absent，其余读失败 = unknown）。
+
+### 测试
+
+- 单测（`sitedir_test.go`）：宿主三态（存在 / 缺失 / 非目录 / 空 root / 相对 root / ENOTDIR）、容器三态（present / absent / 退出码 1 带 stderr / 125 / 126）、降级路径（docker 不在 PATH、docker exec 超时）、`site.status` 字段接线、「无 vhost → unknown」、`site.get` 同口径。
+- 一致性测试（`methodcaps_test.go`）：`info.json.method_capabilities` 与 `siteverbs.go` 的 `verbRegistry` 双向断言（声明 ⊆ 实现、实现 ⊆ 声明）+ 锁定 16 方法与只读/写分类；`info.json` 与 `manifest.json` 的 id/version/capabilities 同步断言。
+- 故障注入（`tests/fault/sitedir_test.go`）：docker 缺失、docker daemon 报错、vhost 无 root 三条降级路径均回 `unknown` 且插件仍能正常应答 `kore.shutdown`。
+
 ## [0.2.0] - 2026-11-23
 
 - feat: 支持容器内 nginx（docker exec 校验与重载）
