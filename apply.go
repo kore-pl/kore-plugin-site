@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -11,11 +10,16 @@ import (
 
 // siteService 把 vhost 落盘与 nginx 校验/重载串成建站闭环：
 //
-//	create: 快照 → 写 vhost/清单 → nginx -t → nginx -s reload
-//	delete: 快照 → 备份并删 vhost/清单 → nginx -t → nginx -s reload
+//	create: 锁内写 vhost/清单（采集本域名撤销元信息）→ nginx -t → nginx -s reload
+//	delete: 锁内备份并删 vhost/清单（采集本域名撤销元信息）→ nginx -t → nginx -s reload
 //
-// 校验失败回滚到调用前状态并回 E_INVALID；重载失败时 create 保留已写配置
-// （站点已写入但不生效）回 E_UPSTREAM，delete 恢复备份后回 E_UPSTREAM。
+// 校验失败时**在清单锁内**做定向回滚（只撤销本域名，不碰并发写者的其他站点），
+// 回 E_INVALID；重载失败时 create 保留已写配置（站点已写入但不生效）回 E_UPSTREAM，
+// delete 恢复本域名备份后回 E_UPSTREAM。
+//
+// 为什么回滚必须在锁内且定向：撤销元信息由 createLocked / deleteLocked 在持锁时采集，
+// 若在锁外用「操作前的整文件快照」回滚，会把 nginx -t 期间并发写者新增的站点抹掉
+// （R6-3 跨锁竞态，回归用例 tests/boundary/rollback_window_test.go）。
 type siteService struct {
 	store  *vhostStore
 	runner *nginxRunner
@@ -52,15 +56,9 @@ func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) 
 	if perr := s.preflightWrite(); perr != nil {
 		return siteCreateResult{}, perr
 	}
-	confBefore, err := snapshotFile(vhostPath(p.Domain))
-	if err != nil {
-		return siteCreateResult{}, internalErr("读取 vhost 原状态失败: " + err.Error())
-	}
-	manifestBefore, err := snapshotFile(s.store.manifestPath())
-	if err != nil {
-		return siteCreateResult{}, internalErr("读取站点清单原状态失败: " + err.Error())
-	}
 
+	// 快照不再在锁外拍：create 在持锁临界区内采集本域名撤销所需的元信息
+	// （backup / created），回滚时凭它在锁内做定向撤销，不碰并发写者的清单条目。
 	path, backup, created, perr := s.store.create(p, php)
 	if perr != nil {
 		return siteCreateResult{}, perr
@@ -68,7 +66,7 @@ func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) 
 
 	testOutcome := s.runner.runTest()
 	if testOutcome.ran && testOutcome.err != nil {
-		if rbErr := restoreSnapshots(confBefore, manifestBefore); rbErr != nil {
+		if rbErr := s.store.rollbackCreate(p.Domain, path, backup, created); rbErr != nil {
 			return siteCreateResult{}, internalErr(fmt.Sprintf(
 				"nginx 配置校验失败且回滚失败: %v；校验输出: %s", rbErr, describeCommand(testOutcome)))
 		}
@@ -122,15 +120,9 @@ func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error)
 	if perr := s.preflightWrite(); perr != nil {
 		return siteDeleteResult{}, perr
 	}
-	confBefore, err := snapshotFile(vhostPath(domain))
-	if err != nil {
-		return siteDeleteResult{}, internalErr("读取 vhost 原状态失败: " + err.Error())
-	}
-	manifestBefore, err := snapshotFile(s.store.manifestPath())
-	if err != nil {
-		return siteDeleteResult{}, internalErr("读取站点清单原状态失败: " + err.Error())
-	}
 
+	// 与 create 同理：撤销所需元信息由 deleteWithBackup 在持锁临界区内采集，
+	// 回滚时凭它在锁内只恢复本域名，不碰并发写者新增的其他站点。
 	path, backup, deleted, perr := s.store.deleteWithBackup(domain)
 	if perr != nil {
 		return siteDeleteResult{}, perr
@@ -146,7 +138,7 @@ func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error)
 
 	testOutcome := s.runner.runTest()
 	if testOutcome.ran && testOutcome.err != nil {
-		if rbErr := restoreSnapshots(confBefore, manifestBefore); rbErr != nil {
+		if rbErr := s.store.rollbackDelete(domain, path, backup); rbErr != nil {
 			return siteDeleteResult{}, internalErr(fmt.Sprintf(
 				"删除后 nginx 配置校验失败且恢复备份失败: %v；校验输出: %s", rbErr, describeCommand(testOutcome)))
 		}
@@ -158,7 +150,7 @@ func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error)
 
 	reloadOutcome := s.runner.runReload()
 	if reloadOutcome.ran && reloadOutcome.err != nil {
-		if rbErr := restoreSnapshots(confBefore, manifestBefore); rbErr != nil {
+		if rbErr := s.store.rollbackDelete(domain, path, backup); rbErr != nil {
 			return siteDeleteResult{}, internalErr(fmt.Sprintf(
 				"删除后 nginx 重载失败且恢复备份失败: %v；重载输出: %s", rbErr, describeCommand(reloadOutcome)))
 		}
@@ -183,19 +175,4 @@ func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error)
 		TestSkipped:   !testOutcome.ran,
 		ReloadSkipped: !reloadOutcome.ran,
 	}, nil
-}
-
-// restoreSnapshots 按"先 vhost 后清单"恢复改动前状态，两者错误合并上报。
-func restoreSnapshots(conf, manifest fileSnapshot) error {
-	var problems []string
-	if err := conf.restore(); err != nil {
-		problems = append(problems, err.Error())
-	}
-	if err := manifest.restore(); err != nil {
-		problems = append(problems, err.Error())
-	}
-	if len(problems) > 0 {
-		return errors.New(strings.Join(problems, "; "))
-	}
-	return nil
 }
