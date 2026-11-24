@@ -22,11 +22,16 @@ const (
 	hintNginxCommand = "nginx 命令需要 root：请以 root 启动 Kore（sudo systemctl restart kore），" +
 		"插件会经内核提权通道执行已声明的 root 动作（nginx-test / nginx-reload / nginx-dump），" +
 		"插件进程自身不需要 root。若 kore 已是 root 仍报此错，检查插件是否已获 system:admin 授权。"
-	// hintConfDirWrite 面向「conf.d 不可写」：root 启动 kore **不能**解决写文件（写盘不走提权通道），
-	// 所以必须给出文件系统层面的动作，避免用户按 hintNginxCommand 白折腾一轮。
-	hintConfDirWrite = "conf.d 目录对插件用户不可写：写 vhost 走插件进程自身（不经提权通道），" +
-		"需要给插件用户写权限——sudo chgrp kore-site <conf.d> && sudo chmod 2775 <conf.d>，" +
-		"或 sudo setfacl -m u:kore-site:rwx <conf.d>；也可把 host_conf_dir 改到插件可写目录后自行 include。"
+	// hintConfDirWrite 面向「降级/旧版本才可能出现的目录不可写」：ADR-0052 已否决
+	// 「给插件用户 conf.d 目录写权限」（access_log 注入 = root RCE），写 vhost 的唯一
+	// 合法通道是内核受控写 file_write。因此这里**不再提 chgrp/chmod/setfacl**。
+	hintConfDirWrite = "写 vhost 走内核受控写通道（ADR-0052），不需要给插件用户 conf.d 目录写权限：" +
+		"请以 root 启动 Kore（sudo systemctl restart kore）后重试；插件进程自身不持有 root，" +
+		"也不应把 conf.d 目录的写权限交给插件用户（那条路已被 ADR-0052 否决）。"
+	// hintVHostChannel 面向「通道不可用 / 内核非 root / 声明缺失」：同一个写路径的降级口径。
+	hintVHostChannel = "写 vhost 走内核受控写通道：请以 root 启动 Kore（sudo systemctl restart kore）后重试；" +
+		"插件自身不需要 root，也不需要给 conf.d 目录授权。若内核已是 root 仍失败，" +
+		"请确认插件版本包含 file_write 声明（旧内核收到 content 会 E_INVALID）。"
 )
 
 // needRootErr 构造带可操作提示的 E_NEED_ROOT（detail.hint 由 UI 直接展示）。
@@ -77,6 +82,29 @@ func needRootCommandErr(out commandOutcome, what string) *pluginapi.Error {
 		detail = "权限被拒，无更多输出"
 	}
 	return needRootErr(what+"失败："+detail, hintNginxCommand)
+}
+
+// vhostWriteErr 把 vhost 写入失败翻译成协议错误：
+//   - 内核通道回 E_NEED_ROOT → 同码 + 受控写口径 hint；
+//   - 通道回其它协议错误 → 保留 code/message/hint（不吞、不改写成成功）；
+//   - 本地回落写盘遇到「root 属主 + 非 root」→ E_NEED_ROOT（旧路径的边界用例）。
+func vhostWriteErr(err error) *pluginapi.Error {
+	var failure *rootActionFailure
+	if errors.As(err, &failure) {
+		if failure.Code == pluginapi.E_NEED_ROOT {
+			return needRootErr(failure.Message, hintVHostChannel)
+		}
+		detail, mErr := json.Marshal(map[string]string{"hint": failure.Hint})
+		protocolErr := &pluginapi.Error{Code: failure.Code, Message: failure.Message}
+		if mErr == nil {
+			protocolErr.Detail = detail
+		}
+		return protocolErr
+	}
+	if perr := needRootForConfDir(vhostDir(), err); perr != nil {
+		return perr
+	}
+	return internalErr("写入 vhost 失败: " + err.Error())
 }
 
 // needRootForConfDir 在「conf.d 不可写 **且** 属主是 root **且** 当前进程非 root」时

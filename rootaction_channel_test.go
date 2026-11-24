@@ -75,7 +75,7 @@ func TestHostRunnerUsesPrivilegeChannel(t *testing.T) {
 // TestHostRunnerChannelExitCode 断言非零退出码被翻译成错误（不能当成功吞掉）。
 func TestHostRunnerChannelExitCode(t *testing.T) {
 	fake := &fakeChannel{output: rootActionOutput{
-		Stderr: "nginx: [emerg] unknown directive \"nope\" in /etc/nginx/conf.d/x.conf:3\n",
+		Stderr:   "nginx: [emerg] unknown directive \"nope\" in /etc/nginx/conf.d/x.conf:3\n",
 		ExitCode: 1,
 	}}
 	out := hostRunnerWithChannel(fake.call).runTest()

@@ -1,7 +1,7 @@
 {
   "id": "site",
   "name": "Nginx 站点管理插件",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "protocol": "kore.plugin.v1",
   "lifecycle": "resident",
   "depth_level": "production",
@@ -37,6 +37,18 @@
       ],
       "timeout_s": 20,
       "description": "打印已加载的完整配置并校验语法（nginx -T，只读）。用于读取 /etc/nginx 下现有 vhost 的实际生效内容"
+    },
+    {
+      "id": "vhost-write",
+      "file_write": {
+        "prefix_class": "nginx.conf.d",
+        "mode": "0644",
+        "content_policy": "nginx.vhost.v1",
+        "max_bytes": 262144
+      },
+      "writes_host": true,
+      "target": "/etc/nginx/conf.d/",
+      "description": "写站点 vhost 片段（内核受控写，ADR-0052）：文件名 kore-site-<domain>.conf、属主 root:root 0644；不执行外部命令"
     }
   ],
   "method_capabilities": {
@@ -67,7 +79,7 @@
     "site.getPHP": "system:read"
   },
   "triggers": [],
-  "requires_kore": ">=0.1.0 <0.2.0",
+  "requires_kore": ">=0.1.1 <0.2.0",
   "resources": {
     "memory_mb": 8,
     "cpu_quota": "20%",
@@ -79,5 +91,5 @@
     "web",
     "ops"
   ],
-  "size_bytes": 2948186
+  "size_bytes": 2953049
 }

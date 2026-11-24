@@ -138,7 +138,8 @@ host 模式且 `KORE_KERNEL_SOCK` / `KORE_PLUGIN_TOKEN` / `KORE_PLUGIN_ID` 齐�
 - `nginx` 命令因权限被拒（内核回 `E_NEED_ROOT`，或直连 exec 输出含 `permission denied`）→ 返回 `E_NEED_ROOT`，
   `detail.hint` 给出「以 root 启动 Kore，插件经通道执行」，插件进程不需要 root。
 - 写 vhost 失败且 `conf.d` **属主是 root、当前用户非 root** → 同样返回 `E_NEED_ROOT`，hint 给出目录授权动作
-  （`chgrp kore-site` + `chmod 2775`，或 `setfacl`）。属主不是 root 时权限失败**不**归因 root（保持 `E_INTERNAL`）：
+  （ADR-0052 已否决目录授权）——写 vhost 走内核受控写通道 `vhost-write`（`file_write`），
+  请以 root 启动 Kore；插件进程不需要 root，也不要给 conf.d 目录 `chgrp/chmod/setfacl`。属主不是 root 时权限失败**不**归因 root（保持 `E_INTERNAL`）：
   root 也解决不了 DAC 位/只读挂载，误报会把人带偏。
 
 **写 vhost 为什么不在 root action 里**：ADR-0022 的 13 条受控命令没有文件写原语；ADR-0028 的受控文件写
@@ -193,7 +194,7 @@ KORE_HOST_CONF_DIR=/tmp/kore-site-cnf \
 
 ```bash
 make build   # CGO_ENABLED=0 GOAMD64=v1 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/site .
-make dist    # 产出 dist/site-0.6.0.tar.gz（info.json + bin/site + SHA256SUMS）与同名 .sha256
+make dist    # 产出 dist/site-0.7.0.tar.gz（info.json + bin/site + SHA256SUMS）与同名 .sha256
 make check   # gofmt → go vet → go test -timeout 200s
 ```
 
@@ -237,7 +238,7 @@ L2 反代后端是 `tests/e2e/testdata/backend`（`CGO_ENABLED=0` 静态二进�
 - **行为准则**：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 - **兼容性**：`protocol: kore.plugin.v1` · `requires_kore: >=0.1.0 <0.2.0` · `lifecycle: resident` · 深度等级 `production`。
 - **验证方式**：本地 `make check` 优先（CI 只在 push main / tag / PR / 手动跑；发布前 `make dist` 连跑两次核对 sha 一致）。
-- **发布产物**：`make dist` → `dist/site-0.6.0.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
+- **发布产物**：`make dist` → `dist/site-0.7.0.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
 - **相关仓库**：[索引 kore-plugins](https://github.com/kore-pl/kore-plugins) · [协议文档](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-PROTOCOL.md) · [SDK 指南](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-SDK.md)
 
 <!-- oss:end -->

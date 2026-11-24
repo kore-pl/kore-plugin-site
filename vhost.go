@@ -22,17 +22,46 @@ var rootPathRE = regexp.MustCompile(`^/[A-Za-z0-9._/@+-]*$`)
 // 删除只允许命中清单内且文件名带本插件前缀的路径，绝不触碰主配置。
 type vhostStore struct {
 	dir string
+	// writer 是 vhost 片段的写通道（ADR-0052 K4）：生产 = 内核受控写 file_write，
+	// 测试 / 本地未接内核时为 nil（回落到同目录原子写，保持单测与开发可用）。
+	writer vhostWriteFunc
 }
+
+// vhostWriteFunc 写一个 vhost 片段；domain 用于生成 kore-site-<domain>.conf 文件名。
+type vhostWriteFunc func(domain string, content []byte) error
 
 // newVHostStore 用当前配置的 conf.d 目录构造 store。
 func newVHostStore() *vhostStore {
-	return &vhostStore{dir: vhostDir()}
+	return &vhostStore{dir: vhostDir(), writer: vhostWriteFuncFromEnv()}
+}
+
+// stateDir 返回清单与锁的落盘目录：生产是 KORE_STATE_DIR（插件私有、可写），
+// 测试/本地未注入时回落到 conf.d（保持既有单测布局）。
+//
+// 为什么清单不能常驻 conf.d：ADR-0052 后 vhost 只经内核受控写落盘，插件对 conf.d
+// 没有目录写权限；清单是**插件状态**不是 nginx 配置，必须放进插件可写目录。
+func (s *vhostStore) stateDir() string {
+	if dir := strings.TrimSpace(os.Getenv("KORE_STATE_DIR")); dir != "" {
+		return dir
+	}
+	return s.dir
 }
 
 // manifestPath 返回清单文件路径。
 func (s *vhostStore) manifestPath() string {
-	return filepath.Join(s.dir, manifestName)
+	return filepath.Join(s.stateDir(), manifestName)
 }
+
+// writeVHost 通过内核受控写通道落盘；通道不可用（测试/本地开发）时回落到原子写。
+func (s *vhostStore) writeVHost(domain string, content []byte) error {
+	if s.writer != nil {
+		return s.writer(domain, content)
+	}
+	return atomicWrite(vhostPath(domain), content)
+}
+
+// usesChannel 报告当前是否走内核受控写（备份由内核负责，插件不再写同目录备份）。
+func (s *vhostStore) usesChannel() bool { return s.writer != nil }
 
 // manifestLockPath 返回清单锁文件路径。
 //
@@ -62,6 +91,9 @@ func (s *vhostStore) withManifestLock(fn func() *pluginapi.Error) *pluginapi.Err
 			return perr
 		}
 		return internalErr("创建 conf.d 目录失败: " + err.Error())
+	}
+	if err := os.MkdirAll(s.stateDir(), 0o700); err != nil {
+		return internalErr("创建插件状态目录失败: " + err.Error())
 	}
 	lockFile, err := os.OpenFile(s.manifestLockPath(), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -248,6 +280,7 @@ func (s *vhostStore) createLocked(p siteParams, php *phpState) (string, string, 
 		}
 	}
 
+	var original []byte
 	backup := ""
 	if existed && previous == path {
 		if _, statErr := os.Stat(path); statErr == nil {
@@ -255,19 +288,22 @@ func (s *vhostStore) createLocked(p siteParams, php *phpState) (string, string, 
 			if readErr != nil {
 				return "", "", false, internalErr("读取原 vhost 以备份失败: " + readErr.Error())
 			}
-			// 备份必须与 vhost 同目录：既避免污染 cwd，也保证回滚 rename 同目录原子生效。
-			backup = filepath.Join(s.dir, backupName(p.Domain, time.Now()))
-			if err := atomicWrite(backup, original); err != nil {
-				return "", "", false, internalErr("备份原 vhost 失败: " + err.Error())
+			// 走内核受控写时备份由内核负责（<state>/backups/<plugin>/<ts>/），插件不再写
+			// 同目录备份——生产 conf.d 对插件不可写，这一步会 EACCES。
+			if !s.usesChannel() {
+				backup = filepath.Join(s.dir, backupName(p.Domain, time.Now()))
+				if err := atomicWrite(backup, original); err != nil {
+					return "", "", false, internalErr("备份原 vhost 失败: " + err.Error())
+				}
 			}
 		}
 	}
 
-	if err := atomicWrite(path, content); err != nil {
+	if err := s.writeVHost(p.Domain, content); err != nil {
 		if backup != "" {
 			_ = os.Rename(backup, path) // 尽力恢复，不覆盖更严重的错误
 		}
-		return "", "", false, internalErr("写入 vhost 失败: " + err.Error())
+		return "", "", false, vhostWriteErr(err)
 	}
 
 	next := m
@@ -278,9 +314,12 @@ func (s *vhostStore) createLocked(p siteParams, php *phpState) (string, string, 
 	next.Sites[p.Domain] = path
 	if err := atomicWrite(s.manifestPath(), encode(next)); err != nil {
 		// 清单写失败：把片段恢复原状，避免"文件落盘但不在清单"的孤儿。
-		if backup != "" {
+		switch {
+		case s.usesChannel() && original != nil:
+			_ = s.writeVHost(p.Domain, original)
+		case backup != "":
 			_ = os.Rename(backup, path)
-		} else {
+		default:
 			_ = os.Remove(path)
 		}
 		return "", "", false, internalErr("更新站点清单失败: " + err.Error())

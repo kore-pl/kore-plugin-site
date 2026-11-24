@@ -16,6 +16,10 @@ const (
 	rootActionNginxReload = "nginx-reload"
 	// rootActionNginxDump 是 `nginx -T`：打印已加载配置并校验（只读，用于读现有 vhost）。
 	rootActionNginxDump = "nginx-dump"
+	// rootActionVHostWrite 是 file_write 受控写（ADR-0052 K4）：把渲染好的 vhost 片段写进
+	// /etc/nginx/conf.d，不执行外部命令。文件名与目录由协议类别 nginx.conf.d 决定，
+	// 插件只提供单层文件名 kore-site-<domain>.conf 与正文。
+	rootActionVHostWrite = "vhost-write"
 )
 
 // codeRootActionIDs 是代码**真正会调用**的动作 id，顺序即 info.json 的声明顺序。
@@ -25,4 +29,5 @@ var codeRootActionIDs = []string{
 	rootActionNginxTest,
 	rootActionNginxReload,
 	rootActionNginxDump,
+	rootActionVHostWrite,
 }

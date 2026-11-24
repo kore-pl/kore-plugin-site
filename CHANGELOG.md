@@ -2,6 +2,44 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.7.0] - 2026-11-24
+
+### 变更
+
+- **写 vhost 从「目录授权」迁到内核受控写通道（ADR-0052 K4）**：`root_actions` 新增
+  `vhost-write`（`file_write`：`prefix_class=nginx.conf.d` / `mode=0644` /
+  `content_policy=nginx.vhost.v1` / `max_bytes=262144`，`writes_host=true`，
+  `target=/etc/nginx/conf.d/`）。`create` / 编辑类方法渲染出的片段改由内核
+  `file_write` 落盘（备份、原子替换、`root:root 0644` 属主复核、审计 begin/end、
+  `changes.jsonl` 与 `purge_op` 回滚均在内核侧完成），插件不再自己
+  `os.CreateTemp` + `rename`。
+- **删除 `E_NEED_ROOT` 的「目录授权」hint**：`chgrp kore-site <conf.d>` /
+  `chmod 2775` / `setfacl` 的建议全部移除——那条路被 ADR-0052 否决（实测
+  `access_log` 注入 = root RCE）。降级口径改为「以 root 启动 Kore，写 vhost 走
+  内核受控写通道；插件自身不需要 root，也不要给 conf.d 目录授权」。
+- **站点清单迁到 `KORE_STATE_DIR`**：清单与清单锁是插件状态不是 nginx 配置；
+  生产形态下 conf.d 由 root 持有 0755、插件不可写，清单必须放进插件私有状态目录
+  （未注入 `KORE_STATE_DIR` 的测试/本地布局仍回落到 conf.d）。
+- **`requires_kore` 收窄为 `>=0.1.1 <0.2.0`**：旧内核的 root-action 解码用
+  `DisallowUnknownFields`，收到 `content` 字段直接 `E_INVALID`；0.1.1 起内核接受
+  `file_write` 声明与 `content` 正文。
+- **已知缺口（如实披露，不静默）**：删除 / 停用 / 启用仍依赖目录内 `remove/rename`，
+  内核目前只有「受控写」原语、没有「受控删除」原语。真机 root 形态下这三条会在
+  目录 DAC 上失败（返回 `E_INTERNAL`）；等内核补齐受控删除后单独发版。`create`
+  与编辑类写已完全走通道。
+- **真机 root e2e 未执行**：本机非 root，`/etc/nginx/conf.d` 为开发态假象；
+  K4 的 root 验证步骤与断言见 `docs/`/回报（未标注通过）。
+
+### 测试
+
+- `root_actions` 自检：exec 动作仍走 `ValidateRootAction`；`file_write` 动作断言
+  与 `argv` 互斥、`writes_host`、`target` 等于类别目录、`mode/content_policy/max_bytes`
+  逐项匹配（SDK 尚未含 `RootAction.FileWrite` 时按协议**显式 skip**并写明所需版本）。
+- 新增行为证据：`create` 经注入通道落盘且**本地零落盘**；通道回 `E_NEED_ROOT`
+  时同码 + hint 且不含 `chgrp/chmod/setfacl`；`KORE_STATE_DIR` 下清单落状态目录。
+- 反例自证：删掉 `info.json` 的 `vhost-write/file_write` 声明后
+  `TestVHostWriteDeclarationPresent` 与 `TestRootActionsDeclared` 双双 FAIL。
+
 ## [0.6.0] - 2026-11-24
 
 ### 新增

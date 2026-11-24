@@ -3,17 +3,21 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/pengtang1024/kore/pkg/pluginapi"
 )
 
-// 本文件守着三件事（缺一条就是「声明与代码漂移」）：
+// 本文件守着四件事（缺一条就是「声明与代码漂移」）：
 //
-//  1. info.json 的 root_actions 每条都能过 ADR-0022 的三级校验（否则内核启用时就会拒）；
-//  2. 声明集合与代码真正调用的 id 集合**双向相等**（少声明=运行期失败，多声明=多余攻击面）；
-//  3. nginx 形状没有 Tail ⇒ 运行时追加任何 token 都必须被拒（提权通道不能变成任意 nginx 调用）。
+//  1. info.json 的 root_actions 与代码真正调用的 id 集合**双向相等**且顺序一致；
+//  2. exec 动作能过 ADR-0022 的协议校验；file_write 动作能过 ADR-0052 的声明形状
+//     （与 argv 互斥、writes_host、target 等于类别目录）——SDK 尚未含 file_write
+//     时按协议文档**显式 skip**，不偷偷放宽成本地校验；
+//  3. nginx 形状没有 Tail ⇒ 运行时追加任何 token 都必须被拒；
+//  4. vhost 写是 file_write（不 exec），声明去掉即 FAIL（反例自证的常驻靶子）。
 
 // declaredManifest 只取本仓关心的字段；root_actions 直接用协议类型，
 // 避免自己再抄一份 schema（抄了就会和 pkg/pluginapi 漂移）。
@@ -21,17 +25,31 @@ type declaredManifest struct {
 	RootActions []pluginapi.RootAction `json:"root_actions"`
 }
 
-// declaredRootAction 是本仓对「协议之外的声明字段」的本地定形。
+// declaredFileWrite 是 file_write 声明的本地定形。
 //
-// 为什么需要第二份：本仓依赖的 pluginapi v0.1.3 的 RootAction 还没有
-// writes_host / target 字段（协议增补晚于该版本）。要在**不引入 any** 的前提下
-// 断言这两个字段的取值，只能按 info.json 的实际形状本地定形。
-type declaredRootAction struct {
-	ID           string `json:"id"`
-	WritesHost   bool   `json:"writes_host"`
-	Target       string `json:"target"`
-	Irreversible bool   `json:"irreversible"`
+// 为什么需要第二份：本仓钉的 pluginapi v0.1.3 的 RootAction / FileWrite 还没有
+// file_write 字段（K2 晚于该版本发布）。要在**不引入 any** 的前提下断言声明取值，
+// 只能按 info.json 的实际形状本地定形；SDK 升版后由 sdkHasFileWrite 自动接管。
+type declaredFileWrite struct {
+	PrefixClass   string `json:"prefix_class"`
+	Mode          string `json:"mode"`
+	ContentPolicy string `json:"content_policy"`
+	MaxBytes      int    `json:"max_bytes"`
 }
+
+// declaredRootAction 是「协议之外的声明字段」的本地定形。
+type declaredRootAction struct {
+	ID           string             `json:"id"`
+	Argv         []string           `json:"argv"`
+	WritesHost   bool               `json:"writes_host"`
+	Target       string             `json:"target"`
+	Irreversible bool               `json:"irreversible"`
+	FileWrite    *declaredFileWrite `json:"file_write"`
+}
+
+// nginxConfDDir 是协议类别 nginx.conf.d 的目录（pluginapi.FileWritePrefixClasses 的
+// 唯一真源在 SDK；本仓 SDK v0.1.3 未含该类，故按协议文档钉值并在此注明来源）。
+const nginxConfDDir = "/etc/nginx/conf.d/"
 
 // loadDeclaredManifest 读仓库根的 info.json，同时返回协议视图与本地定形视图。
 func loadDeclaredManifest(t *testing.T) (declaredManifest, []declaredRootAction) {
@@ -53,25 +71,32 @@ func loadDeclaredManifest(t *testing.T) (declaredManifest, []declaredRootAction)
 	return m, local.RootActions
 }
 
-// TestRootActionsDeclared 断言每条声明通过协议校验，且与代码调用面双向一致。
+// sdkHasFileWrite 报告当前 SDK 的 RootAction 是否含 FileWrite 字段。
+//
+// 协议 §3.1.3.2 要求插件走 pluginapi.ValidateRootAction；SDK 尚未包含该字段时
+// 显式 skip 并写明所需版本，**不得**改写成一份本地宽松校验冒充通过。
+func sdkHasFileWrite() bool {
+	_, ok := reflect.TypeOf(pluginapi.RootAction{}).FieldByName("FileWrite")
+	return ok
+}
+
+// TestRootActionsDeclared 断言每条声明通过对应形状校验，且与代码调用面双向一致。
 //
 // 这条用例就是「反例自证」的靶子：把 info.json 里的 root_actions 删掉或删一条，
 // 它会立刻 FAIL（数量/集合/校验三处任一命中），不需要人工检查。
 func TestRootActionsDeclared(t *testing.T) {
-	m, _ := loadDeclaredManifest(t)
-	if len(m.RootActions) == 0 {
-		t.Fatalf("info.json 未声明任何 root_actions：插件将无法写 /etc/nginx 或 reload（E_NEED_ROOT 且有通道也调不到）")
-	}
+	m, local := loadDeclaredManifest(t)
 	if len(m.RootActions) != len(codeRootActionIDs) {
 		t.Fatalf("声明 %d 条、代码调用 %d 条，必须相等（声明=%v 代码=%v）",
 			len(m.RootActions), len(codeRootActionIDs), actionIDsOf(m.RootActions), codeRootActionIDs)
 	}
+	if len(local) != len(m.RootActions) {
+		t.Fatalf("两份解析的条目数不一致: %d vs %d", len(local), len(m.RootActions))
+	}
 
 	seen := make(map[string]bool, len(m.RootActions))
 	for index, action := range m.RootActions {
-		if err := pluginapi.ValidateRootAction(action); err != nil {
-			t.Fatalf("root_actions[%d] id=%q 未过 ADR-0022/协议校验: %v", index, action.ID, err)
-		}
+		declared := local[index]
 		if seen[action.ID] {
 			t.Fatalf("root_actions id=%q 重复声明", action.ID)
 		}
@@ -79,6 +104,41 @@ func TestRootActionsDeclared(t *testing.T) {
 		if index >= len(codeRootActionIDs) || action.ID != codeRootActionIDs[index] {
 			t.Fatalf("root_actions[%d] id=%q 与 codeRootActionIDs[%d]=%q 不一致（声明顺序即代码顺序）",
 				index, action.ID, index, codeRootActionIDs[index])
+		}
+		if declared.FileWrite == nil {
+			if err := pluginapi.ValidateRootAction(action); err != nil {
+				t.Fatalf("root_actions[%d] id=%q 未过 ADR-0022/协议校验: %v", index, action.ID, err)
+			}
+			continue
+		}
+		// file_write 的本地形状断言（SDK 未含该字段时的唯一可执行校验）。
+		if len(declared.Argv) != 0 {
+			t.Fatalf("file_write 动作 %q 不得声明 argv（写文件不执行外部命令）", action.ID)
+		}
+		if !declared.WritesHost {
+			t.Fatalf("file_write 动作 %q 必须 writes_host=true（要进 changes.jsonl 变更账本）", action.ID)
+		}
+		if declared.Target != nginxConfDDir {
+			t.Fatalf("file_write 动作 %q 的 target=%q 必须逐字等于类别目录 %q", action.ID, declared.Target, nginxConfDDir)
+		}
+		if declared.FileWrite.PrefixClass != "nginx.conf.d" {
+			t.Fatalf("prefix_class=%q 期望 nginx.conf.d", declared.FileWrite.PrefixClass)
+		}
+		if declared.FileWrite.Mode != "0644" {
+			t.Fatalf("mode=%q 期望 0644（权限位是安全边界）", declared.FileWrite.Mode)
+		}
+		if declared.FileWrite.ContentPolicy != "nginx.vhost.v1" {
+			t.Fatalf("content_policy=%q 期望 nginx.vhost.v1", declared.FileWrite.ContentPolicy)
+		}
+		if declared.FileWrite.MaxBytes != maxVHostContentBytes {
+			t.Fatalf("max_bytes=%d 期望 %d（协议硬顶）", declared.FileWrite.MaxBytes, maxVHostContentBytes)
+		}
+		if !sdkHasFileWrite() {
+			t.Logf("SKIP ValidateRootAction(%q)：需要 pluginapi ≥ 含 file_write 的版本（当前 SDK 无 RootAction.FileWrite）", action.ID)
+			continue
+		}
+		if err := pluginapi.ValidateRootAction(action); err != nil {
+			t.Fatalf("root_actions[%d] id=%q 未过 ADR-0052 协议校验: %v", index, action.ID, err)
 		}
 	}
 
@@ -89,23 +149,26 @@ func TestRootActionsDeclared(t *testing.T) {
 	}
 }
 
-// TestRootActionsReadOnlyShape 断言三条动作都是**只读或可逆**、且固定 argv 不含自由参数。
-//
-// 具体三点：① 不声明 writes_host（写宿主文件走不了 argv 通道，见 CHANGELOG 的边界说明）；
-// ② 不声明 irreversible（reload 是幂等动作，不该逼用户每轮核销一次性令牌）；
-// ③ argv 长度固定，且不含 `-s stop` / `quit` 这类停服语句。
-func TestRootActionsReadOnlyShape(t *testing.T) {
+// TestRootActionsShape 断言两类动作各自的安全形状：
+// exec 动作只读/幂等、writes_host=false；file_write 动作是唯一的写宿主动作。
+func TestRootActionsShape(t *testing.T) {
 	m, local := loadDeclaredManifest(t)
-	if len(local) != len(m.RootActions) {
-		t.Fatalf("两份解析的条目数不一致: %d vs %d", len(local), len(m.RootActions))
-	}
 	for index, action := range m.RootActions {
-		declaredLocal := local[index]
-		if declaredLocal.WritesHost {
-			t.Fatalf("root action %q 声明了 writes_host：nginx 命令不直接写宿主文件，写 vhost 由插件自身落盘", action.ID)
+		declared := local[index]
+		if declared.Irreversible {
+			t.Fatalf("root action %q 声明了 irreversible：本仓动作均幂等/可回滚，不该逼用户每轮核销令牌", action.ID)
 		}
-		if declaredLocal.Irreversible {
-			t.Fatalf("root action %q 声明了 irreversible：本仓三条动作均幂等，不需一次性 confirm 令牌", action.ID)
+		if declared.FileWrite != nil {
+			if !declared.WritesHost {
+				t.Fatalf("file_write 动作 %q 必须 writes_host=true", action.ID)
+			}
+			if len(action.Argv) != 0 {
+				t.Fatalf("file_write 动作 %q 不得有 argv", action.ID)
+			}
+			continue
+		}
+		if declared.WritesHost {
+			t.Fatalf("exec 动作 %q 声明了 writes_host：nginx 三条命令不直接写宿主文件", action.ID)
 		}
 		if len(action.Argv) < 2 {
 			t.Fatalf("root action %q 的 argv 过短（%v）：至少要有命令名 + 操作旗标", action.ID, action.Argv)
@@ -119,13 +182,10 @@ func TestRootActionsReadOnlyShape(t *testing.T) {
 	}
 }
 
-// TestRootActionsRejectAppendedArgs 是三级校验的**运行时**证据：
-// 声明 argv 合法，但追加任何 token 都必须被拒——否则通道就成了任意 nginx 调用口。
+// TestRootActionsRejectAppendedArgs 是三级校验的**运行时**证据：exec 动作
+// 声明 argv 合法，但追加任何 token 都必须被拒。
 func TestRootActionsRejectAppendedArgs(t *testing.T) {
 	m, _ := loadDeclaredManifest(t)
-	if len(m.RootActions) == 0 {
-		t.Fatalf("没有声明可测：先补 root_actions")
-	}
 	tails := [][]string{
 		{"-s", "stop"},
 		{"-s", "quit"},
@@ -134,6 +194,9 @@ func TestRootActionsRejectAppendedArgs(t *testing.T) {
 		{"stop"},
 	}
 	for _, action := range m.RootActions {
+		if len(action.Argv) == 0 {
+			continue // file_write 不执行命令，没有 Tail 面
+		}
 		if err := pluginapi.ValidateRootAppendedArgv(action.Argv, nil); err != nil {
 			t.Fatalf("root action %q 声明 argv 本身未过校验: %v", action.ID, err)
 		}
@@ -143,6 +206,25 @@ func TestRootActionsRejectAppendedArgs(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestVHostWriteDeclarationPresent 是**反例自证**的常驻形式：删掉 info.json 里的
+// vhost-write / file_write 声明，本用例立刻 FAIL。
+func TestVHostWriteDeclarationPresent(t *testing.T) {
+	_, local := loadDeclaredManifest(t)
+	for _, action := range local {
+		if action.ID != rootActionVHostWrite {
+			continue
+		}
+		if action.FileWrite == nil {
+			t.Fatalf("动作 %q 缺少 file_write 声明：写 vhost 会退回执行面或被内核拒绝", action.ID)
+		}
+		if action.FileWrite.PrefixClass != "nginx.conf.d" {
+			t.Fatalf("file_write.prefix_class=%q 期望 nginx.conf.d", action.FileWrite.PrefixClass)
+		}
+		return
+	}
+	t.Fatalf("info.json 未声明 %q：site.create/编辑类方法将没有受控写通道", rootActionVHostWrite)
 }
 
 // actionIDsOf 提取声明里的 id 列表（失败信息用）。

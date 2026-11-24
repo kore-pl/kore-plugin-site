@@ -13,8 +13,8 @@ import (
 // 非 root 下的降级（P0：0 条 root_actions 时建站不可用）。
 //
 // 真机造法：把 conf.d 指到一个**属主是 root、当前进程不可写**的目录（本机用 /etc）。
-// 插件降权后以 kore-site 运行，写 vhost 走的是插件进程自身（不经提权通道），
-// 因此必然 EACCES。断言：
+// 插件降权后以 kore-site 运行，vhost 写走内核受控写通道（ADR-0052）；
+// 通道不可用时仍必须以 E_NEED_ROOT 降级（而不是 E_INTERNAL 或静默成功）。断言：
 //
 //  1. 错误码是 `E_NEED_ROOT`（不是 E_INTERNAL——用户需要知道"这是权限问题、要怎么办"）；
 //  2. detail.hint 非空且给出可执行动作（chgrp/chmod/setfacl 或 root 启动 kore）；
@@ -76,10 +76,15 @@ func TestBoundaryNeedRootWhenConfDirRootOwned(t *testing.T) {
 		t.Fatalf("E_NEED_ROOT 缺少 detail.hint（用户不知道下一步该做什么）: detail=%s err=%v",
 			response.Error.Detail, err)
 	}
-	// hint 必须给可执行动作，不能是"联系管理员"这类空话。
-	if !strings.Contains(detail.Hint, "chgrp") && !strings.Contains(detail.Hint, "setfacl") &&
-		!strings.Contains(detail.Hint, "chmod") {
-		t.Fatalf("hint 未给出可执行的目录授权动作: %q", detail.Hint)
+	// ADR-0052 否决目录授权：hint 必须指向「以 root 启动 Kore / 受控写通道」，
+	// 且**不得**再建议 chgrp/chmod/setfacl（access_log 注入 = root RCE）。
+	for _, banned := range []string{"chgrp", "chmod", "setfacl"} {
+		if strings.Contains(detail.Hint, banned) {
+			t.Fatalf("hint 仍在建议目录授权 %q（ADR-0052 已否决）: %q", banned, detail.Hint)
+		}
+	}
+	if !strings.Contains(detail.Hint, "受控写") && !strings.Contains(detail.Hint, "root") {
+		t.Fatalf("hint 未给出可执行出路（受控写 / root 启动）: %q", detail.Hint)
 	}
 
 	// 把实测响应打进 CI 日志：这条错误就是"非 root 下正确报错"的证据原文。

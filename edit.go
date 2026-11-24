@@ -70,11 +70,8 @@ func (s *siteService) applyEdit(domain string, mutate func(*siteState) *pluginap
 	if perr != nil {
 		return applyResult{}, st, perr
 	}
-	if err := atomicWrite(path, content); err != nil {
-		if perr := needRootForConfDir(s.store.dir, err); perr != nil {
-			return applyResult{}, st, perr
-		}
-		return applyResult{}, st, internalErr("写入 vhost 失败: " + err.Error())
+	if err := s.store.writeVHost(domain, content); err != nil {
+		return applyResult{}, st, vhostWriteErr(err)
 	}
 
 	testOutcome := s.runner.runTest()
@@ -116,6 +113,11 @@ func (s *siteService) applyEdit(domain string, mutate func(*siteState) *pluginap
 
 // writeBackup 在改动前留一份带时间戳的同目录备份（非 .conf 后缀，不会被 include）。
 func (s *siteService) writeBackup(domain string, content []byte) (string, *pluginapi.Error) {
+	// 走受控写通道时备份由内核负责（写前备份到 <state>/backups/<plugin>/<ts>/），
+	// 插件不再往 conf.d 写 .bak（生产目录对插件不可写）。
+	if s.store.usesChannel() {
+		return "", nil
+	}
 	backup := s.store.backupPath(domain)
 	if err := atomicWrite(backup, content); err != nil {
 		return "", internalErr("备份 vhost 失败: " + err.Error())

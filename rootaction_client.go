@@ -33,6 +33,11 @@ import (
 // 的 timeout_s（20s）兜底，这里多留 5s 余量，只防 HTTP 永久挂住。
 const rootActionTimeout = 25 * time.Second
 
+// maxVHostContentBytes 等于协议硬顶 pluginapi.MaxFileWriteContentBytes（256 KiB）。
+// 本仓当前钉的 SDK v0.1.3 尚未导出该常量；SDK 升到含 file_write 的版本后改为直接引用，
+// 数值不得放大（ADR-0052：上限是安全边界不是建议值）。
+const maxVHostContentBytes = 256 << 10
+
 // maxRootActionBody 是响应体读取上限（内核 stdout/stderr 各截断 1 MiB，留余量）。
 const maxRootActionBody = 4 << 20
 
@@ -134,7 +139,49 @@ type rootActionError struct {
 // 非 2xx 一律解析成 *rootActionFailure（保留 code/hint）；解析不出协议错误时
 // 返回带状态码的普通错误——两条路径都不吞错、不改写成成功。
 func (c *rootActionClient) Call(actionID string) (rootActionOutput, error) {
-	body, err := json.Marshal(rootActionRequest{ActionID: actionID})
+	return c.post(rootActionRequest{ActionID: actionID})
+}
+
+// vhostWriteRequest 是 file_write 动作的请求体（ADR-0052）：单层文件名 + 正文。
+//
+// 目录不在请求里——它只来自协议类别 nginx.conf.d（pluginapi.FileWritePrefixClasses），
+// 插件自报目录的字段根本不存在，所以这里没有第二条注入面。
+type vhostWriteRequest struct {
+	ActionID string   `json:"action_id"`
+	Args     []string `json:"args"`
+	Content  string   `json:"content"`
+}
+
+// WriteVHost 经内核受控写通道把一个 vhost 片段写到 conf.d。
+//
+// 不 exec 任何命令：file_write 声明在 info.json 里，内核按声明分派到受控写
+// （备份 / 原子替换 / 属主复核 / 审计 / changes.jsonl 全在内核侧）。
+func (c *rootActionClient) WriteVHost(domain string, content []byte) error {
+	if len(content) > maxVHostContentBytes {
+		return fmt.Errorf("vhost 正文 %d 字节超过协议硬顶 %d", len(content), maxVHostContentBytes)
+	}
+	if _, err := c.post(vhostWriteRequest{
+		ActionID: rootActionVHostWrite,
+		Args:     []string{vhostFileName(domain)},
+		Content:  string(content),
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// vhostWriteFuncFromEnv 在通道三要素齐备时返回受控写调用面；缺一返回 nil。
+func vhostWriteFuncFromEnv() vhostWriteFunc {
+	client := newRootActionClient()
+	if client == nil {
+		return nil
+	}
+	return client.WriteVHost
+}
+
+// post 是通道请求的公共 HTTP 层：序列化 → UDS → 解析协议错误 / 结果。
+func (c *rootActionClient) post(payload any) (rootActionOutput, error) {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return rootActionOutput{}, fmt.Errorf("序列化 root-action 请求失败：%w", err)
 	}
