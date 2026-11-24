@@ -2,6 +2,23 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.8.1] - 2026-11-24
+
+### 变更
+
+- **升 `pluginapi` 到 v0.3.0（`pkg/pluginapi/v0.3.0` tag）**：本仓 `go.mod` 从 v0.1.3 升到
+  v0.3.0，`go.sum` 重算（`go.mod` 摘要未变，与 v0.1.3 一致）。v0.3.0 起 SDK 自带
+  `RootAction.FileWrite` / `RootAction.FileDelete` 与 `ValidateRootAction` 的 ADR-0052 /
+  ADR-0053 校验分支——之前「SDK 没有该字段」的前提已不成立。
+- **删掉反射守卫与两处 SKIP**：`rootactions_test.go` 删除 `sdkHasFileWrite()` /
+  `sdkHasFileDelete()`（`reflect.TypeOf(...).FieldByName`）及其 `SKIP ValidateRootAction(...)`
+  分支；`file_write` / `file_delete` 两条动作现在**无条件**过 `pluginapi.ValidateRootAction`。
+  「SDK 无该字段」的降级路径改成编译期保证（直接引用 `action.FileWrite` / `action.FileDelete`），
+  不存在「跑不到就算过」的缝。
+- **测试去重**：删掉本地 `declaredFileWrite` / `declaredFileDelete` / `declaredRootAction`
+  三份镜像 schema，断言直接落在 SDK 协议类型上；类别目录改由 SDK
+  `FileWritePrefixClasses["nginx.conf.d"].Dir` 比对常量，漂移即 FAIL。判据一条没放宽。
+
 ## [0.8.0] - 2026-11-24
 
 ### 变更

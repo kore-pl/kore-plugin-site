@@ -1,7 +1,7 @@
 {
   "id": "site",
   "name": "Nginx 站点管理插件",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "protocol": "kore.plugin.v1",
   "lifecycle": "resident",
   "depth_level": "production",
@@ -100,5 +100,5 @@
     "web",
     "ops"
   ],
-  "size_bytes": 2954081
+  "size_bytes": 2955575
 }
