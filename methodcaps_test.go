@@ -7,8 +7,9 @@ import (
 	"testing"
 )
 
-// expectedBusinessMethods 是本仓业务方法总数（0.3.x 的 16 个 + 0.4.0 clone + 0.4.1 setPassword/clearPassword = 20）。
-const expectedBusinessMethods = 20
+// expectedBusinessMethods 是本仓业务方法总数（0.3.x 的 16 个 + 0.4.0 clone +
+// 0.4.1 setPassword/clearPassword + 0.6.0 setPHP/unsetPHP/getPHP = 23）。
+const expectedBusinessMethods = 23
 
 // expectedConfigMethods 是配置面板通用契约的两个方法：由 methods.go 的 dispatch 直接分发
 // （`<id>.config.get` / `<id>.config.set`），**不走 verbRegistry**。
@@ -27,7 +28,7 @@ const expectedTotalMethods = expectedBusinessMethods + 2
 // expectedReadMethods 是本仓只读业务方法清单；其余业务方法必须是 system:admin。
 // 这张表是"只读 / 写"分类的验收依据：把写方法误降为 read 会让只读会话获得写权限。
 var expectedReadMethods = map[string]struct{}{
-	"list": {}, "status": {}, "get": {}, "getRewrite": {}, "traffic": {},
+	"list": {}, "status": {}, "get": {}, "getRewrite": {}, "traffic": {}, "getPHP": {},
 }
 
 // privilegedCapabilitySet 是内核唯一白名单（internal/core/registry/validate.go：

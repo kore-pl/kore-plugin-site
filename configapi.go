@@ -47,7 +47,7 @@ type configSetResult struct {
 	Warnings        []string `json:"warnings"`
 }
 
-// nginxConfigSchema 描述容器模式相关的 4 个配置项；help 必须能指导小白操作。
+// nginxConfigSchema 描述容器模式与 PHP-FPM 的 5 个配置项；help 必须能指导小白操作。
 func nginxConfigSchema() configSchema {
 	return configSchema{Title: "nginx 集成", Fields: []configField{
 		{
@@ -72,6 +72,12 @@ func nginxConfigSchema() configSchema {
 			Default: json.RawMessage(`"/etc/nginx/conf.d"`), Required: false,
 			Help: "站点配置写入的宿主目录；容器模式下它必须已挂载到容器内的 conf.d",
 		},
+		{
+			Key: cfgPHPFpmSocket, Label: "PHP-FPM socket 路径", Type: "string",
+			Default: json.RawMessage(`""`), Required: false,
+			Help:        "留空则自动探测 /run/php/php<版本>-fpm.sock；nginx 在容器内时填容器内路径（例如 /run/php/php8.3-fpm.sock）",
+			Placeholder: "/run/php/php8.3-fpm.sock",
+		},
 	}}
 }
 
@@ -89,7 +95,7 @@ func handleConfigGet() (any, *pluginapi.Error) {
 }
 
 // handleConfigSet 执行「校验 → 原子写 → 生效」：写盘成功才返回 applied，
-// 下一次业务调用重新读取 config.json，因此 4 个字段全部热生效（restart_required=false）。
+// 下一次业务调用重新读取 config.json，因此 5 个字段全部热生效（restart_required=false）。
 func handleConfigSet(raw json.RawMessage) (any, *pluginapi.Error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, invalidParam("缺少 values 对象")

@@ -39,7 +39,7 @@ func TestConfigGetDefaultsAndSchema(t *testing.T) {
 	if got.Source != "default" {
 		t.Fatalf("未保存时应 source=default: %s", got.Source)
 	}
-	if got.Schema.Title == "" || len(got.Schema.Fields) != 4 {
+	if got.Schema.Title == "" || len(got.Schema.Fields) != 5 {
 		t.Fatalf("schema 应有 4 个字段: %+v", got.Schema)
 	}
 	seen := map[string]bool{}

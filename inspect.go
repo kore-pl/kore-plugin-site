@@ -87,6 +87,11 @@ func (s *siteService) status(domain string) (siteStatusResult, *pluginapi.Error)
 	}
 	// 兼容字段：只有确定存在才是 true；unknown 与 absent 都是 false（老调用方语义不变）。
 	result.SiteDirExists = result.SiteDirState == siteDirPresent
+	if err == nil {
+		php := parsePHPState(scanBlocks(string(content)))
+		result.PHPEnabled = php != nil
+		result.PHPVersion = php.versionOrEmpty()
+	}
 	if siteRootOutsideInstall(root) {
 		result.OutsideInstall = true
 		result.OutsideInstallHint = outsideInstallHint()

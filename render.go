@@ -26,6 +26,13 @@ func renderVHost(st siteState) []byte {
 	}
 	writeAuthBlock(&b, st)
 	writeContentBlock(&b, st)
+	// PHP 块**正交追加**在 content 块之后，不参与上面 content 的三路互斥：
+	// WordPress 同时需要「location / 美化链接」与「location ~ \.php$ 交 FPM」，
+	// 塞进互斥分支会把伪静态顶掉。nginx 里正则 location 优先于前缀 location，
+	// 因此 PHP 站即使带伪静态，/index.php 也一定进 FPM。
+	if st.PHP != nil {
+		writePHPBlock(&b, st.PHP)
+	}
 	for _, rule := range st.Redirects {
 		writeRedirectBlock(&b, rule)
 	}
@@ -92,6 +99,29 @@ func writeRewriteBlock(b *strings.Builder, template string) {
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("    " + endMarker(blockKeyRewrite) + "\n")
+}
+
+// writePHPBlock 写出 PHP-FPM 处理块（location ~ \.php$）。
+//
+// 三条硬约束：
+//  1. try_files $uri =404 —— 不存在的 .php 直接 404，绝不把路径拼给 FPM
+//     （否则 /upload/x.jpg/evil.php 这类构造会变成任意脚本执行面）；
+//  2. fastcgi_pass 只写 unix socket 绝对路径（phpState.Socket 已过字符集校验）；
+//  3. 参数内联，不 include 宿主文件，片段保持自包含。
+func writePHPBlock(b *strings.Builder, p *phpState) {
+	b.WriteString("    " + beginMarker(blockKeyPHP) + "\n")
+	if p.Version != "" {
+		b.WriteString("    # version: " + p.Version + "\n")
+	}
+	b.WriteString("    location ~ \\.php$ {\n")
+	b.WriteString("        try_files $uri =404;\n")
+	b.WriteString("        fastcgi_pass unix:" + p.Socket + ";\n")
+	b.WriteString("        fastcgi_index index.php;\n")
+	for _, param := range fastcgiParams {
+		b.WriteString("        fastcgi_param " + param + "\n")
+	}
+	b.WriteString("    }\n")
+	b.WriteString("    " + endMarker(blockKeyPHP) + "\n")
 }
 
 // writeRedirectBlock 写出一条精确匹配重定向（location = 优先于前缀匹配）。

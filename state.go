@@ -19,8 +19,16 @@ const (
 	blockKeyRewrite        = "rewrite"
 	blockKeyProxy          = "proxy"
 	blockKeyHTTPRedirect   = "http-redirect"
+	blockKeyPHP            = "php"
 	blockKeyRedirectPrefix = "redirect:"
 )
+
+// phpState 是已启用的 PHP-FPM 配置。Socket 是唯一事实来源（写进 fastcgi_pass），
+// Version 只用于展示与一致性校验——解析不出时为空串，不编造版本号。
+type phpState struct {
+	Version string
+	Socket  string
+}
 
 // sslState 是已绑定的证书配置；force_https 由是否存在 http-redirect 服务块表示。
 type sslState struct {
@@ -53,6 +61,9 @@ type siteState struct {
 	Proxy     *proxyState
 	Redirects []redirectRule
 	Auth      *authState
+	// PHP 与 Rewrite 正交：PHP 站既需要 location / 的美化链接，也需要
+	// location ~ \.php$ 交给 FPM，两者必须并存（不是二选一）。
+	PHP *phpState
 }
 
 // disabledSuffix 是停用站点的 vhost 后缀：conf.d/*.conf 不会匹配它，

@@ -25,6 +25,11 @@ func validateSettings(settings pluginSettings) (pluginSettings, error) {
 	if settings.HostConfDir, err = normalizeAbsDir(cfgHostConfDir, settings.HostConfDir); err != nil {
 		return pluginSettings{}, err
 	}
+	if settings.PHPFpmSocket != "" {
+		if err := validatePHPSocketPath(settings.PHPFpmSocket); err != nil {
+			return pluginSettings{}, fmt.Errorf("%s 非法: %w（示例 /run/php/php8.3-fpm.sock）", cfgPHPFpmSocket, err)
+		}
+	}
 	if mode == nginxModeDocker && settings.DockerContainer == "" {
 		return pluginSettings{}, errors.New("nginx_mode=docker 必须同时配置 docker_container（例如 kore-nginx）")
 	}

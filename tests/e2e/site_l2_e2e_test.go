@@ -53,6 +53,10 @@ func TestDockerNginxL2(t *testing.T) {
 	main := startPlugin(t, binary, confDir, map[string]string{
 		"KORE_NGINX_TEST_CMD":   "docker exec " + container + " nginx -t",
 		"KORE_NGINX_RELOAD_CMD": "docker exec " + container + " nginx -s reload",
+		// wordpress 是 PHP 伪静态模板：插件会写入 fastcgi_pass 块。容器里没有 PHP-FPM，
+		// nginx -t 不校验 socket 是否存在（只有真正请求 .php 时才连），因此显式声明 socket
+		// 即可让"伪静态 + nginx -t"这条链仍然成立；静态页请求不会走到 PHP。
+		"KORE_SITE_PHP_FPM_SOCKET": "/run/php/php8.3-fpm.sock",
 	})
 	defer main.stop(t)
 

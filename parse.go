@@ -30,7 +30,40 @@ func parseSiteState(domain, content string) siteState {
 	st.Proxy = parseProxyState(blocks)
 	st.Redirects = parseRedirectRules(blocks)
 	st.Auth = parseAuthState(content)
+	st.PHP = parsePHPState(blocks)
 	return st
+}
+
+// parsePHPState 从 php 块还原 FPM socket 与版本：socket 取自 fastcgi_pass 是唯一事实来源，
+// 版本优先取 "# version: X.Y" 注释，其次从 socket 文件名解析，都拿不到就留空。
+func parsePHPState(blocks []blockEntry) *phpState {
+	body, ok := findBlock(blocks, blockKeyPHP)
+	if !ok {
+		return nil
+	}
+	pass := directiveValue(body, "fastcgi_pass")
+	if !strings.HasPrefix(pass, "unix:") {
+		return nil
+	}
+	socket := strings.TrimPrefix(pass, "unix:")
+	if socket == "" {
+		return nil
+	}
+	version := ""
+	for _, line := range body {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "# version:") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "# version:"))
+		if phpVersionRE.MatchString(value) {
+			version = value
+		}
+	}
+	if version == "" {
+		version = phpVersionFromSocket(socket)
+	}
+	return &phpState{Version: version, Socket: socket}
 }
 
 // parseSSLState 从 ssl 块还原证书路径；force_https 看是否存在 80 跳转服务块。

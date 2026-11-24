@@ -25,6 +25,7 @@ const (
 	cfgDockerContainer = "docker_container"
 	cfgDockerConfDir   = "docker_conf_dir"
 	cfgHostConfDir     = "host_conf_dir"
+	cfgPHPFpmSocket    = "php_fpm_socket"
 
 	defaultNginxMode     = nginxModeAuto
 	defaultDockerConfDir = "/etc/nginx/conf.d"
@@ -38,6 +39,7 @@ const (
 	envDockerContainer = "KORE_DOCKER_CONTAINER"
 	envDockerConfDir   = "KORE_DOCKER_CONF_DIR"
 	envHostConfDir     = "KORE_HOST_CONF_DIR"
+	envPHPFpmSocket    = "KORE_SITE_PHP_FPM_SOCKET"
 )
 
 // containerNameRE 约束容器名：字母或数字开头，后接 [A-Za-z0-9_.-]，最长 128。
@@ -50,6 +52,9 @@ type pluginSettings struct {
 	DockerContainer string `json:"docker_container"`
 	DockerConfDir   string `json:"docker_conf_dir"`
 	HostConfDir     string `json:"host_conf_dir"`
+	// PHPFpmSocket 是显式的 PHP-FPM socket 路径（留空则按 /run/php 等目录自动探测）。
+	// 容器模式下宿主看不到容器内 socket，此时必须显式声明。
+	PHPFpmSocket string `json:"php_fpm_socket"`
 }
 
 // settingsPatch 是 config.set 的增量入参：指针区分「未提交」与「显式清空」。
@@ -58,6 +63,7 @@ type settingsPatch struct {
 	DockerContainer *string `json:"docker_container"`
 	DockerConfDir   *string `json:"docker_conf_dir"`
 	HostConfDir     *string `json:"host_conf_dir"`
+	PHPFpmSocket    *string `json:"php_fpm_socket"`
 }
 
 // defaultSettings 返回代码默认值。
@@ -128,6 +134,7 @@ func settingsFromEnv() (pluginSettings, bool) {
 	assign(&out.DockerContainer, envDockerContainer)
 	assign(&out.DockerConfDir, envDockerConfDir)
 	assign(&out.HostConfDir, envHostConfDir, vhostDirEnv)
+	assign(&out.PHPFpmSocket, envPHPFpmSocket)
 	return out, any
 }
 
@@ -142,6 +149,7 @@ func mergeSettings(base, over pluginSettings) pluginSettings {
 	set(&base.DockerContainer, over.DockerContainer)
 	set(&base.DockerConfDir, over.DockerConfDir)
 	set(&base.HostConfDir, over.HostConfDir)
+	set(&base.PHPFpmSocket, over.PHPFpmSocket)
 	return base
 }
 
@@ -158,6 +166,10 @@ func applyPatch(current pluginSettings, patch settingsPatch) pluginSettings {
 	}
 	if patch.HostConfDir != nil {
 		current.HostConfDir = *patch.HostConfDir
+	}
+	if patch.PHPFpmSocket != nil {
+		// php_fpm_socket 允许显式清空（回到自动探测），因此不跳过空串。
+		current.PHPFpmSocket = strings.TrimSpace(*patch.PHPFpmSocket)
 	}
 	return current
 }

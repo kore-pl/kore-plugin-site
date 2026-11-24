@@ -104,7 +104,7 @@ func (s *siteService) clone(p cloneParams) (siteCloneResult, *pluginapi.Error) {
 	}
 
 	// 1) 用既有 create 路径落新 vhost + 清单（含冲突/备份/回滚语义）。
-	if _, _, _, perr := s.store.create(siteParams{Domain: newDomain, Root: newRoot, Port: sourceState.Port}); perr != nil {
+	if _, _, _, perr := s.store.create(siteParams{Domain: newDomain, Root: newRoot, Port: sourceState.Port}, nil); perr != nil {
 		return siteCloneResult{}, perr
 	}
 	// 2) 用源站点的完整状态覆盖新 vhost，复用 applyEdit 的 test/reload/回滚闭环。

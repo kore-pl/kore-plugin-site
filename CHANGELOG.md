@@ -2,6 +2,49 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.6.0] - 2026-11-24
+
+### 新增
+
+- **PHP-FPM 支持，修复「伪静态下拉摆着 wordpress/thinkphp/discuz，选了永远跑不起来」（P0 诚实性缺陷）**：
+  `render.go` 生成的 vhost 此前**完全没有 PHP-FPM 块**，只有静态 `try_files`——而 `rewriteTemplateBodies`
+  提供 `wordpress` / `laravel` / `thinkphp` / `discuz` 四个 PHP 模板。选 WordPress = 得到一个
+  「配着美化链接、nginx 却不解析 `.php`」的站点：`.php` 被当静态文件 404 或直接下载。
+  **这不是"简陋"，是配置与事实不符的诚实性缺陷。**
+- **正交设计（不改三路互斥）**：PHP 是追加在 content 块之后的独立受管块 `kore-site:php`，
+  与 `location /` 的静态/伪静态/反代**并存**。WordPress 同时需要「`location /` 美化链接」与
+  「`location ~ \.php$` 交 FPM」，把 PHP 塞进 `writeContentBlock` 的互斥 switch 会把伪静态顶掉
+  （nginx 正则 location 优先于前缀 location，但两者必须同时存在）。
+- **版本来源**：`site.create` 新增可选 `php_version`（`auto` = 探测最高版本，`8.3` = 必须命中）；
+  新增 `site.setPHP`（可带显式 `socket`）/ `site.unsetPHP` / `site.getPHP`。
+  版本解析优先级：入参 `socket` > `config.php_fpm_socket`（新配置项，容器模式必填）> 扫描
+  `/run/php`、`/var/run/php`、`/run/php-fpm`、`/var/run/php-fpm` 下的**真实 unix socket**（高版本优先）。
+- **无 PHP 环境必须明确报错**：探测不到 FPM 时 `create` / `setPHP` / PHP 伪静态模板一律回
+  `E_INVALID` + 「请先安装 PHP-FPM（apt install php-fpm / dnf install php-fpm）」，
+  且 `create` **一个字节都不落盘**——绝不静默生成一个跑不起来的静态站。
+- **伪静态与 PHP 联动**：`setRewrite` 选 PHP 模板时，已有 PHP 直接放行；没有则自动补上并回
+  `php_auto_enabled=true` + `php_version`；探测不到 FPM 则**拒绝**（不是警告），保证「选了就能跑」。
+  `unsetPHP` 在仍启用 PHP 伪静态模板时拒绝（先 `setRewrite none`），避免整站 404。
+- **结果字段只报事实**：`site.create` 的 `php_enabled` / `php_version` / `php_socket` 从**实际落盘的
+  vhost 解析**得出，不是回显入参意图（反例自证时这条会立刻变红）；`site.get` 增 `php` 子视图，
+  `site.status` 增 `php_enabled` / `php_version`。显式 socket 在宿主不可见时（容器场景）
+  回 `php_socket_verified=false` + 提示，不假装验证过。
+- **安全边界**：`fastcgi_pass` 只写 `unix:` 绝对 socket（字符集 `A-Za-z0-9._/@+-`，与 root 同级注入防线）；
+  `location ~ \.php$` 内固定 `try_files $uri =404`，不存在的 `.php` 不拼给 FPM；
+  FastCGI 参数内联（不 `include fastcgi_params`），vhost 片段自包含。
+- **测试**：`php_test.go` 覆盖 PHP 站有 `fastcgi_pass`（断言具体 socket 路径）/ 纯静态站**无**
+  `fastcgi_pass` / 无 FPM 时 `create` 报错且不落盘 / wordpress 无 PHP 被拒且 vhost 不变 /
+  wordpress 自动补 PHP 且伪静态与 PHP 块并存 / `unsetPHP` 依赖校验 / 显式 socket 注入防线 /
+  配置 socket 兜底与版本冲突 / 克隆沿用 / render↔parse 幂等；
+  **反例自证**：去掉 `writePHPBlock` 调用后 5 条用例 FAIL（含 `TestPHPSiteExplicitVersion`），恢复即绿。
+  既有 `setRewrite`/`clone` 用例改用具真实 unix socket 的 `fakeFPMSocket`（探测只认 socket，不能用 touch 造假）；
+  `tests/fault` 的 fixture 也给真 socket，让 `setRewrite` 的故障注入仍打在「写盘后校验失败 → 回滚」路径上。
+- 版本 0.5.0 → 0.6.0（新增能力，minor）；`manifest.json` 同步；`info.json` 新增 3 条 `method_capabilities`
+  （`site.setPHP` / `site.unsetPHP` = `system:admin`，`site.getPHP` = `system:read`）。
+- 未验证项：**与真实 PHP-FPM 的连通性**（本机无 php-fpm 包、无 nginx 容器）。验证方式：
+  装 `apt install php8.3-fpm` 后 `site.setPHP {domain, php_version:"auto"}` → 在站点根放 `index.php`
+  → `curl http://<domain>/index.php` 期望执行输出而非下载；再 `site.getPHP` 核对 socket 一致。
+
 ## [0.5.0] - 2026-11-24
 
 ### 新增

@@ -23,6 +23,7 @@ func TestCloneCopiesConfigAndRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sourceRoot, "index.html"), []byte("<h1>src</h1>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fakeFPMSocket(t, "8.3") // wordpress 预设需要 PHP-FPM
 	callOK(t, "site.create", map[string]any{"domain": "src.example.com", "root": sourceRoot})
 	callOK(t, "site.setRewrite", map[string]any{"domain": "src.example.com", "template": "wordpress"})
 

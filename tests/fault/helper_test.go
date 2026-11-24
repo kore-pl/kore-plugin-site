@@ -109,6 +109,14 @@ func startPluginWithEnv(t *testing.T, binary, confDir string, memLimitKB int, en
 	merged["KORE_NGINX_TEST_CMD"] = "true"
 	merged["KORE_NGINX_RELOAD_CMD"] = "true"
 	merged["KORE_NGINX_DUMP_CMD"] = "true"
+	// PHP 伪静态模板（wordpress 等）现在要求真实 FPM socket：给一个临时 unix socket，
+	// 让故障注入打在"写盘后 nginx 校验失败 → 回滚"的真实路径上，而不是提前被
+	// E_INVALID（未装 PHP-FPM）拦在外面——否则 setRewrite 的回滚覆盖就名存实亡。
+	phpDir := t.TempDir()
+	if phpListener, err := net.Listen("unix", filepath.Join(phpDir, "php8.3-fpm.sock")); err == nil {
+		t.Cleanup(func() { _ = phpListener.Close() })
+		merged["KORE_SITE_PHP_SOCKET_DIRS"] = phpDir
+	}
 	for key, value := range env {
 		merged[key] = value
 	}

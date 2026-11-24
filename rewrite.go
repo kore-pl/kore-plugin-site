@@ -62,10 +62,16 @@ type rewriteParams struct {
 }
 
 // rewriteSetResult 是 site.setRewrite 结果。
+//
+// PHPEnabled 是操作后的真实现状（站点是否带 FPM 块）；PHPAutoEnabled 表示本次
+// 为了满足 wordpress 这类模板**自动补上**了 PHP——前端据此提示"已自动启用 PHP 8.3"。
 type rewriteSetResult struct {
 	applyResult
-	Template     string `json:"template"`
-	ProxyCleared bool   `json:"proxy_cleared"`
+	Template       string `json:"template"`
+	ProxyCleared   bool   `json:"proxy_cleared"`
+	PHPEnabled     bool   `json:"php_enabled"`
+	PHPAutoEnabled bool   `json:"php_auto_enabled"`
+	PHPVersion     string `json:"php_version,omitempty"`
 }
 
 // rewriteGetResult 是 site.getRewrite 结果（解析注释块，不跑 nginx）。
@@ -92,11 +98,30 @@ func setRewriteHandler(svc *siteService, raw json.RawMessage) (any, *pluginapi.E
 	if !isRewriteTemplate(template) {
 		return nil, invalidParam("template 必须是 " + strings.Join(rewriteTemplateNames, "|"))
 	}
-	proxyCleared := false
-	res, _, perr := svc.applyEdit(p.Domain, func(st *siteState) *pluginapi.Error {
+	var (
+		proxyCleared   bool
+		phpAutoEnabled bool
+		phpAutoVersion string
+	)
+	res, st, perr := svc.applyEdit(p.Domain, func(st *siteState) *pluginapi.Error {
 		if st.Proxy != nil {
 			st.Proxy = nil
 			proxyCleared = true
+		}
+		// PHP 伪静态模板必须有 FPM 才成立：已有 PHP 直接放行；没有则用探测结果补上；
+		// 探测不到 FPM 时**拒绝**——给一个"配着 wordpress、实际全站 404"的站点
+		// 正是本缺陷的原形，宁可报错也不静默降级成静态站。
+		if isPHPRewriteTemplate(template) && st.PHP == nil {
+			resolution, perr := resolvePHPState(svc.settings, phpAutoVersion, "")
+			if perr != nil {
+				return &pluginapi.Error{
+					Code:    pluginapi.E_INVALID,
+					Message: "伪静态模板 " + template + " 需要 PHP-FPM 才能运行；" + perr.Message,
+				}
+			}
+			enabled := resolution.State
+			st.PHP = &enabled
+			phpAutoEnabled, phpAutoVersion = true, enabled.Version
 		}
 		st.Rewrite = template
 		return nil
@@ -104,7 +129,14 @@ func setRewriteHandler(svc *siteService, raw json.RawMessage) (any, *pluginapi.E
 	if perr != nil {
 		return nil, perr
 	}
-	return rewriteSetResult{applyResult: res, Template: template, ProxyCleared: proxyCleared}, nil
+	return rewriteSetResult{
+		applyResult:    res,
+		Template:       template,
+		ProxyCleared:   proxyCleared,
+		PHPEnabled:     st.PHP != nil,
+		PHPAutoEnabled: phpAutoEnabled,
+		PHPVersion:     st.PHP.versionOrEmpty(),
+	}, nil
 }
 
 // getRewriteHandler 返回当前模板名（从注释块解析，禁用站点同样可读）。

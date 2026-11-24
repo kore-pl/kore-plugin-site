@@ -32,6 +32,9 @@ var verbRegistry = map[string]verbHandler{
 	"setPassword":   setPasswordHandler,
 	"clearPassword": clearPasswordHandler,
 	"traffic":       trafficHandler,
+	"setPHP":        setPHPHandler,
+	"unsetPHP":      unsetPHPHandler,
+	"getPHP":        getPHPHandler,
 }
 
 // handleSiteVerb 按注册表执行方法；未注册的方法回 E_NOTFOUND。

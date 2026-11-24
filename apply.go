@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/pengtang1024/kore/pkg/pluginapi"
@@ -37,6 +38,17 @@ func newSiteService() (*siteService, *pluginapi.Error) {
 
 // create 执行完整建站链路并返回真实生效状态。
 func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) {
+	// PHP 站点先解析出真实 FPM socket：解析失败直接 E_INVALID，**一个字节都不落盘**。
+	// 静默退化成静态站是本缺陷的原形（配置写着 PHP、nginx 不解析 .php）。
+	var php *phpState
+	if strings.TrimSpace(p.PHPVersion) != "" {
+		resolution, perr := resolvePHPState(s.settings, p.PHPVersion, "")
+		if perr != nil {
+			return siteCreateResult{}, perr
+		}
+		resolved := resolution.State
+		php = &resolved
+	}
 	if perr := s.preflightWrite(); perr != nil {
 		return siteCreateResult{}, perr
 	}
@@ -49,7 +61,7 @@ func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) 
 		return siteCreateResult{}, internalErr("读取站点清单原状态失败: " + err.Error())
 	}
 
-	path, backup, created, perr := s.store.create(p)
+	path, backup, created, perr := s.store.create(p, php)
 	if perr != nil {
 		return siteCreateResult{}, perr
 	}
@@ -80,7 +92,7 @@ func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) 
 		}
 	}
 
-	return siteCreateResult{
+	result := siteCreateResult{
 		nginxStatus:   s.runner.status(),
 		Domain:        p.Domain,
 		VHostPath:     path,
@@ -92,7 +104,17 @@ func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) 
 		Created:       created,
 		TestSkipped:   !testOutcome.ran,
 		ReloadSkipped: !reloadOutcome.ran,
-	}, nil
+	}
+	// PHP 状态从**实际落盘的 vhost** 解析，而不是回显入参意图：
+	// 万一渲染层没写出 PHP 块，这里必须如实报 php_enabled=false（否则就是本缺陷同款自嗨）。
+	if content, readErr := os.ReadFile(path); readErr == nil {
+		if written := parsePHPState(scanBlocks(string(content))); written != nil {
+			result.PHPEnabled = true
+			result.PHPVersion = written.Version
+			result.PHPSocket = written.Socket
+		}
+	}
+	return result, nil
 }
 
 // delete 删除 vhost 后重新校验并重载；任一失败都恢复删除前状态。

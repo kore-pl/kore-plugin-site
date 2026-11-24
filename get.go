@@ -26,6 +26,13 @@ type proxySummary struct {
 	WS       bool   `json:"ws"`
 }
 
+// phpSummary 是 site.get 的 PHP 子视图：enabled 是"vhost 里真的有 FPM 块"，不是"想启用"。
+type phpSummary struct {
+	Enabled bool   `json:"enabled"`
+	Version string `json:"version,omitempty"`
+	Socket  string `json:"socket,omitempty"`
+}
+
 type redirectSummary struct {
 	FromPath string `json:"from_path"`
 	ToURL    string `json:"to_url"`
@@ -51,6 +58,7 @@ type siteGetResult struct {
 	SSL           sslSummary        `json:"ssl"`
 	Rewrite       rewriteSummary    `json:"rewrite"`
 	Proxy         proxySummary      `json:"proxy"`
+	PHP           phpSummary        `json:"php"`
 	Redirects     []redirectSummary `json:"redirects"`
 }
 
@@ -82,6 +90,7 @@ func getHandler(svc *siteService, raw json.RawMessage) (any, *pluginapi.Error) {
 		Port:      st.Port,
 		Index:     st.Index,
 		Rewrite:   rewriteSummary{Template: st.Rewrite},
+		PHP:       phpSummary{Enabled: st.PHP != nil, Version: st.PHP.versionOrEmpty(), Socket: st.PHP.socketOrEmpty()},
 		Redirects: make([]redirectSummary, 0, len(st.Redirects)),
 	}
 	result.SiteDirState, result.SiteDirReason = probeSiteDir(svc.runner, st.Root)

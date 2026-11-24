@@ -164,7 +164,7 @@ func (s *vhostStore) validateManagedPath(path string) error {
 //
 // 清单是**跨进程共享的单一状态**，「读清单 → 落 vhost → 写回清单」整段必须在
 // 清单锁内完成——否则多个实例各自读到旧清单再写回，后写者覆盖先写者（丢站点）。
-func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Error) {
+func (s *vhostStore) create(p siteParams, php *phpState) (string, string, bool, *pluginapi.Error) {
 	var (
 		path    string
 		backup  string
@@ -172,7 +172,7 @@ func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Erro
 	)
 	perr := s.withManifestLock(func() *pluginapi.Error {
 		var lockedErr *pluginapi.Error
-		path, backup, created, lockedErr = s.createLocked(p)
+		path, backup, created, lockedErr = s.createLocked(p, php)
 		return lockedErr
 	})
 	if perr != nil {
@@ -182,7 +182,8 @@ func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Erro
 }
 
 // createLocked 是 create 的临界区，调用方必须已持有清单锁。
-func (s *vhostStore) createLocked(p siteParams) (string, string, bool, *pluginapi.Error) {
+// php 为 nil 表示本次不启用/不改动 PHP：新建站即纯静态站，既有站点保留原 PHP 块。
+func (s *vhostStore) createLocked(p siteParams, php *phpState) (string, string, bool, *pluginapi.Error) {
 	path := vhostPath(p.Domain)
 	if err := s.validateManagedPath(path); err != nil {
 		return "", "", false, invalidParam("非法 vhost 路径: " + err.Error())
@@ -223,6 +224,14 @@ func (s *vhostStore) createLocked(p siteParams) (string, string, bool, *pluginap
 			st.Root, st.Port = root, port
 			content = renderVHost(st)
 		}
+	}
+	// PHP 块按「显式请求才加」的原则挂载：php 为 nil 时不碰既有 PHP 状态，
+	// 也不会给纯静态站凭空加 fastcgi_pass（静态站不该有 PHP 处理面）。
+	if php != nil {
+		st := parseSiteState(p.Domain, string(content))
+		st.Root, st.Port = root, port
+		st.PHP = php
+		content = renderVHost(st)
 	}
 	// 生成后自检：绝不产出 default_server 指令（红队 R6）。
 	if strings.Contains(stripComments(content), "default_server") {

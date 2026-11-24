@@ -62,6 +62,10 @@ type siteCreateResult struct {
 	Created       bool   `json:"created"`
 	TestSkipped   bool   `json:"test_skipped,omitempty"`
 	ReloadSkipped bool   `json:"reload_skipped,omitempty"`
+	// PHPEnabled 表示本次建站带 PHP-FPM 块；PHPVersion/PHPSocket 为实际落盘值。
+	PHPEnabled bool   `json:"php_enabled"`
+	PHPVersion string `json:"php_version,omitempty"`
+	PHPSocket  string `json:"php_socket,omitempty"`
 }
 
 // siteDeleteResult 描述 site.delete 的实际删除与生效结果。
@@ -106,15 +110,20 @@ type siteStatusResult struct {
 	// OutsideInstall / OutsideInstallHint：站点根在安装目录外时的只读提示（不自动搬迁）。
 	OutsideInstall     bool   `json:"outside_install,omitempty"`
 	OutsideInstallHint string `json:"outside_install_hint,omitempty"`
+	// PHPEnabled / PHPVersion 来自 vhost 里的 kore-site:php 块（真的配了 FPM 才是 true）。
+	PHPEnabled bool   `json:"php_enabled"`
+	PHPVersion string `json:"php_version,omitempty"`
 }
 
 // siteParams 是站点方法的入参。DefaultServer 仅用于识别并拒绝抢占默认站点；
 // Root 与 Port 为可选覆盖，缺省为 /var/www/<domain> 与 80。
+// PHPVersion 省略 = 纯静态站；"auto" = 用探测到的最高版本；"8.3" = 必须命中该版本。
 type siteParams struct {
 	Domain        string `json:"domain"`
 	DefaultServer *bool  `json:"default_server"`
 	Root          string `json:"root,omitempty"`
 	Port          int    `json:"port,omitempty"`
+	PHPVersion    string `json:"php_version,omitempty"`
 }
 
 // siteManifest 是本插件生成的 vhost 清单，用于 delete 时只删自己生成的文件。

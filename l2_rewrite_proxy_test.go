@@ -7,6 +7,9 @@ import (
 // TestSetRewriteAppliesTemplate 覆盖伪静态模板切换与注释块解析。
 func TestSetRewriteAppliesTemplate(t *testing.T) {
 	dir := useTempConfDir(t)
+	// wordpress/thinkphp 是 PHP 伪静态模板：插件会给站点补 PHP-FPM 块，
+	// 因此用例必须提供真实 FPM socket，否则按设计会被拒绝（这正是本轮的修复点）。
+	fakeFPMSocket(t, "8.3")
 	domain := "wp.example.com"
 	path, _ := createTestSite(t, dir, domain)
 
@@ -31,7 +34,9 @@ func TestSetRewriteAppliesTemplate(t *testing.T) {
 	callOK(t, "site.setRewrite", map[string]any{"domain": domain, "template": "thinkphp"})
 	content := readVHost(t, path)
 	mustContain(t, content, "rewrite ^(.*)$ /index.php?s=$1 last;")
-	mustNotContain(t, content, "$query_string")
+	// 只断言 wordpress 模板体被整体替换：PHP 块的 fastcgi_param QUERY_STRING $query_string
+	// 是 FPM 必需参数，与"旧伪静态没被清掉"无关，不能用裸 $query_string 判。
+	mustNotContain(t, content, "/index.php?$query_string")
 
 	// 回到 none：恢复默认静态处理，注释块整体消失。
 	callOK(t, "site.setRewrite", map[string]any{"domain": domain, "template": "none"})
@@ -122,6 +127,7 @@ func TestSetProxyInvalidUpstream(t *testing.T) {
 // 互相设置时清掉对方并在结果里明确告知。
 func TestRewriteProxyMutuallyExclusive(t *testing.T) {
 	dir := useTempConfDir(t)
+	fakeFPMSocket(t, "8.3") // wordpress 需要 PHP-FPM（PHP 块与伪静态块并存）
 	domain := "exclusive.example.com"
 	path, _ := createTestSite(t, dir, domain)
 

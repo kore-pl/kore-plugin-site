@@ -39,6 +39,9 @@ func useTempConfDir(t *testing.T) string {
 	t.Setenv(nginxTestCmdEnv, "/bin/true")
 	t.Setenv(nginxReloadCmdEnv, "/bin/true")
 	t.Setenv(nginxDumpCmdEnv, "/bin/true")
+	// PHP-FPM 扫描目录同样指到空目录：用例结论不能取决于跑测试的机器是否装了 PHP。
+	// 需要 PHP 的用例自己调 fakeFPMSocket / emptyFPMSocketDir 覆盖。
+	t.Setenv(envPHPSocketDirs, t.TempDir())
 	return dir
 }
 

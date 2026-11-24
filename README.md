@@ -21,7 +21,7 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | `site.get` / `get` | 完整配置摘要：`root` / `port` / `index` / `ssl` / `rewrite` / `proxy` / `redirects` / `enabled`，以及与 `status` 同口径的 `site_dir_state` / `site_dir_exists` / `site_dir_reason`。只读，不 reload。 |
 | `site.bindSSL` / `bindSSL` | 在 vhost 内写 `listen 443 ssl` + 证书 + TLS1.2+ 套件，默认附 80→443 跳转；`force_https=false` 时 80/443 并存。 |
 | `site.unbindSSL` / `unbindSSL` | 移除整个 SSL 块（含 443 监听与跳转），站点回到纯 HTTP。 |
-| `site.setRewrite` / `setRewrite` | 伪静态模板枚举 `none \| wordpress \| laravel \| thinkphp \| discuz \| nextjs`，整块替换。 |
+| `site.setRewrite` / `setRewrite` | 伪静态模板枚举 `none \| wordpress \| laravel \| thinkphp \| discuz \| nextjs`，整块替换。**PHP 模板（wordpress/laravel/thinkphp/discuz）必须配 PHP-FPM**：站点已有 PHP 直接放行；没有则自动探测并补上（回 `php_auto_enabled=true`）；探测不到 FPM 时回 `E_INVALID` 拒绝，绝不生成「配着 wordpress 却跑不起来」的站。 |
 | `site.getRewrite` / `getRewrite` | 从注释块解析当前模板名（禁用站点同样可读）。 |
 | `site.setProxy` / `setProxy` | 生成 `location /` 反代；`ws=true` 补 WebSocket 升级头；`upstream` 只接受 `http://host:port`。 |
 | `site.unsetProxy` / `unsetProxy` | 移除反代块。 |
@@ -31,9 +31,12 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | `site.setIndex` / `setIndex` | 设置 `index` 指令，默认 `index.html index.htm index.php`。 |
 | `site.clone` / `clone` | 克隆站点 `{source_domain, new_domain, root?, copy_root?}`：复制 vhost 全量配置（SSL/伪静态/反代/重定向/index）；`copy_root=true` 仅复制 `KORE_STATE_DIR` 内的站点根（ADR-0023）。 |
 | `site.setPassword` / `clearPassword` | 站点级 Basic 认证：`setPassword {domain, username, password}` 写入 apr1 哈希到 vhost 同目录 htpasswd（密码不回显）；`clearPassword {domain}` 移除 auth 段并删除密码文件。 |
+| `site.setPHP` / `setPHP` | 启用/切换 PHP-FPM：`{domain, php_version?, socket?}`；`php_version` 省略或 `auto` = 探测到的最高版本，`8.3` = 必须命中该版本；`socket` 可显式指定（容器场景）。探测不到 FPM 回 `E_INVALID`（提示怎么装），**不落盘**。结果回 `php_enabled` / `php_version` / `php_socket` / `php_socket_verified`。 |
+| `site.unsetPHP` / `unsetPHP` | 移除 PHP-FPM 块（幂等）。若站点仍启用 PHP 伪静态模板则回 `E_INVALID`（先 `setRewrite none`），避免整站 404。 |
+| `site.getPHP` / `getPHP` | 只读：当前 PHP 状态 + 本机可用 FPM 候选（`available[]`，供前端做版本下拉）。 |
 | `site.traffic` / `traffic` | 只读流量统计：解析 nginx combined access_log（显式 `log_path` > vhost `access_log` > `/var/log/nginx/<domain>.access.log`），返回请求数/字节/独立 IP/状态码分类/热门路径与 IP；读不到日志返回 `available=false` + reason + hint，不编数据。 |
 | 默认站点根 | 未显式传 `root` 时用 `$KORE_PLUGIN_DATA/sites/<domain>`（内核注入；未注入时回退 `/var/www/<domain>` 并打 WARN）；`status`/`list` 对安装目录外的站点根返回 `outside_install` + 迁移提示，不自动搬迁。 |
-| `site.config.get` / `config.get` | 返回 4 个配置项的 schema、当前值与来源（`file` / `env` / `default`）。只读。 |
+| `site.config.get` / `config.get` | 返回 5 个配置项的 schema、当前值与来源（`file` / `env` / `default`）。只读。 |
 | `site.config.set` / `config.set` | 校验 → 原子写 `<KORE_STATE_DIR>/config.json`（0600）→ 下一次调用立即生效（`restart_required=false`）。 |
 | `kore.ping` / `kore.reload` / `kore.shutdown` | 协议必选方法；`kore.reload` 无外部配置，`config_digest` 为空。 |
 
@@ -68,9 +71,9 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 
 收益：只读调用按 `system:read` 判定，不再按插件级 `system:admin` 写 `invoke.*` 审计（§3.5 #12）；写方法仍按 admin 审计。`config.get` / `config.set` 自 0.3.1 起也逐条声明（读=read、写=admin），**配置读取不再按 admin 类进审计**。
 
-`config.*` 由 `methods.go` 的 `dispatch` 直接分发（配置面板通用契约），不实现 `verbHandler`、**不注册进 `verbRegistry`**。单测因此分两组断言：业务方法（16 条）与 `verbRegistry` 双向对齐（声明 ⊆ 实现、实现 ⊆ 声明），`config.*`（2 条）单独断言「必须存在且读=read、写=admin」；另有一条防回归断言要求每个声明键都以 `site.` 为域。新增/删除方法时 info.json 与对应实现必须同改。
+`config.*` 由 `methods.go` 的 `dispatch` 直接分发（配置面板通用契约），不实现 `verbHandler`、**不注册进 `verbRegistry`**。单测因此分两组断言：业务方法（23 条）与 `verbRegistry` 双向对齐（声明 ⊆ 实现、实现 ⊆ 声明），`config.*`（2 条）单独断言「必须存在且读=read、写=admin」；另有一条防回归断言要求每个声明键都以 `site.` 为域。新增/删除方法时 info.json 与对应实现必须同改。
 
-## L2 能力（可用）：SSL / 伪静态 / 反代 / 重定向 / 启停 / index
+## L2 能力（可用）：SSL / 伪静态 / 反代 / 重定向 / 启停 / index / PHP-FPM
 
 L2 配置的**唯一事实来源就是 vhost 文件本身**：受管片段用注释标记块
 （`# >>> kore-site:<key> >>>` … `# <<< kore-site:<key> <<<`）括起来，每次改动都走
@@ -83,6 +86,14 @@ L2 配置的**唯一事实来源就是 vhost 文件本身**：受管片段用注
 - **SSL**：`cert_path` / `key_path` 必须是规范化绝对路径、字符集 `A-Za-z0-9._/@+-` 且真实存在；
   TLS 套件固定 TLS1.2+，不接受自定义原始片段。`force_https` 默认 `true`（80 由独立 server 块 301 到 https）。
 - **伪静态**：只给枚举模板，不允许自定义 nginx 片段；`none` 表示默认 `try_files $uri $uri/ =404`。
+- **PHP-FPM（正交块）**：`location ~ \.php$` 块**不是** `location /` 的第四个互斥分支，而是追加在
+  content 块之后的独立受管块（`kore-site:php`）。WordPress 这类应用同时需要「`location /` 美化链接」
+  与「`location ~ \.php$` 交 FPM」，塞进互斥分支会把伪静态顶掉（nginx 中正则 location 优先于前缀 location）。
+  块内固定 `try_files $uri =404`（不存在的 `.php` 直接 404，杜绝把构造路径拼给 FPM），
+  `fastcgi_pass unix:<socket>`，参数内联（不 `include fastcgi_params`，片段自包含）。
+  socket 来源优先级：`setPHP`/`create` 的 `socket` 入参 > `config.php_fpm_socket` > 扫描
+  `/run/php`、`/var/run/php`、`/run/php-fpm`、`/var/run/php-fpm` 下的**真实 unix socket**（高版本优先）。
+  **探测不到就报 `E_INVALID`，绝不静默生成静态站**——这才是本能力存在的意义。
 - **反代与伪静态互斥**：两者都占用 `location /`，同时存在会让 `nginx -t` 报 duplicate location，
   因此互相设置时会自动清掉对方，并在结果里回 `rewrite_cleared` / `proxy_cleared`。
 - **重定向**：`from_path` 必须 `/` 开头且不含 `..`；`to_url` 只允许 `http://` / `https://` 或站内 `/` 路径
@@ -156,6 +167,8 @@ host 模式且 `KORE_KERNEL_SOCK` / `KORE_PLUGIN_TOKEN` / `KORE_PLUGIN_ID` 齐�
 | `KORE_SITE_CONF_DIR` | 否 | `KORE_HOST_CONF_DIR` 的历史别名（测试与自定义布局用） |
 | `KORE_NGINX_TEST_CMD` | 否 | host 模式校验命令前缀，缺省 `nginx`（实际执行 `nginx -t`）；`off` 显式跳过校验 |
 | `KORE_NGINX_RELOAD_CMD` | 否 | host 模式重载命令前缀，缺省 `nginx`（实际执行 `nginx -s reload`）；`off` 显式跳过重载 |
+| `KORE_SITE_PHP_FPM_SOCKET` | 否 | 显式 PHP-FPM socket 路径，对应 `config.json.php_fpm_socket`；留空自动探测 |
+| `KORE_SITE_PHP_SOCKET_DIRS` | 否 | FPM socket 扫描目录（冒号分隔），缺省 `/run/php:/var/run/php:/run/php-fpm:/var/run/php-fpm`；测试与非常规布局用 |
 | `KORE_NGINX_DUMP_CMD` | 否 | host 模式转储命令前缀，缺省由校验前缀推导并补 `-T`；`off` 显式跳过加载检测 |
 
 配置优先级：`<KORE_STATE_DIR>/config.json` > 环境变量 > 代码默认值。`config.json` 由 `site.config.set` 写入（0600、原子替换），保存后下一次方法调用立即生效，无需重启插件；显式给了 `nginx_mode` 时它优先于 `KORE_NGINX_*_CMD`（auto 模式下显式命令前缀仍优先，保证老部署升级后行为不变）。
@@ -180,7 +193,7 @@ KORE_HOST_CONF_DIR=/tmp/kore-site-cnf \
 
 ```bash
 make build   # CGO_ENABLED=0 GOAMD64=v1 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/site .
-make dist    # 产出 dist/site-0.5.0.tar.gz（info.json + bin/site + SHA256SUMS）与同名 .sha256
+make dist    # 产出 dist/site-0.6.0.tar.gz（info.json + bin/site + SHA256SUMS）与同名 .sha256
 make check   # gofmt → go vet → go test -timeout 200s
 ```
 
@@ -224,7 +237,7 @@ L2 反代后端是 `tests/e2e/testdata/backend`（`CGO_ENABLED=0` 静态二进�
 - **行为准则**：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 - **兼容性**：`protocol: kore.plugin.v1` · `requires_kore: >=0.1.0 <0.2.0` · `lifecycle: resident` · 深度等级 `production`。
 - **验证方式**：本地 `make check` 优先（CI 只在 push main / tag / PR / 手动跑；发布前 `make dist` 连跑两次核对 sha 一致）。
-- **发布产物**：`make dist` → `dist/site-0.5.0.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
+- **发布产物**：`make dist` → `dist/site-0.6.0.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
 - **相关仓库**：[索引 kore-plugins](https://github.com/kore-pl/kore-plugins) · [协议文档](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-PROTOCOL.md) · [SDK 指南](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-SDK.md)
 
 <!-- oss:end -->
