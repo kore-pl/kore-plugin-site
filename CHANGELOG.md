@@ -2,6 +2,48 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.8.0] - 2026-11-24
+
+### 变更
+
+- **删站 / 停用 / 启用迁到内核受控通道（ADR-0053）**：`root_actions` 新增 `vhost-delete`
+  （`file_delete{prefix_class:"nginx.conf.d"}`，`writes_host=true`，`target=/etc/nginx/conf.d/`，
+  无 `argv`、无静态 `purge_op`）。v0.7.0 只迁了「写」，装 root 后 `kore-site` 对 `conf.d`
+  没有目录写权限，`deleteLocked` 的 `os.Remove` 与 `toggle` 的 `os.Rename` 都会 DAC 失败
+  （`E_INTERNAL`）；本次把三条路径全部收口到通道：
+  - **删站** = 内核受控删除 `vhost-delete`（删前强制备份进 `<install>/data/backups`，
+    账本 `purge_op=file.restore`，故删除仍是可回滚动作）；
+  - **停用** = 内容备份到插件自有目录（`KORE_STATE_DIR/kore-site-<domain>.conf.disabled`）+ `vhost-delete`；
+  - **启用** = 从插件自有目录读回 + `vhost-write`（`file_write`）写回，成功后删备份。
+- **消灭 `conf.d` 里的 `.conf.disabled` 孤儿**：停用副本改落插件自有目录，不再在 `conf.d` 做
+  `rename`；升级前遗留的 `<name>.conf.disabled` 随删除尽力清理（不被 `*.conf` 匹配，不影响 nginx）。
+- **删除的插件侧备份改落 `KORE_STATE_DIR`**：`deleteWithBackup` 的同目录备份在 root 形态下
+  同样 `EACCES`；走受控删除时不再写第二份（内核已强制备份），回落本地删除时写插件可写目录。
+- **回滚也走通道**：清单写失败 / `nginx -t` 或 `reload` 失败时，恢复片段用 `file_write`、
+  撤销启用用 `file_delete`；不再依赖 `os.Rename`（同样需要目录写权限）。
+- **`requires_kore` 保持 `>=0.1.1 <0.2.0`（不放宽、不虚抬）**：内核 `CHANGELOG [0.1.1] - 未发布`
+  的首个发布版本即含 `file_delete`（`VERSION=0.1.1`，`file_delete` 晚于 `pluginapi v0.2.0` tag 合入），
+  所以这个下界已经覆盖「首个含受控删除的内核版本」；`file_delete` 的 G-14 断言需在
+  `make version-check` 同轮补（属内核仓库，本次未改）。
+- **SDK 依赖不变（仍钉 `pluginapi v0.1.3`）**：通道调用是 `action_id + args` 的 JSON 线上协议，
+  不需要 `pluginapi.FileDelete` 类型；`v0.3.0` tag 发出前不为一个尚不存在的版本升 `go.mod`。
+  声明形状按本仓既有口径用本地定形 + 反射守卫断言，`sdkHasFileDelete()` 在内核 SDK 升到含
+  `RootAction.FileDelete` 后自动接管协议校验（与 `file_write` 的 `sdkHasFileWrite()` 同构）。
+
+### 测试
+
+- 新增 `vhostdelete_test.go` 五条行为证据：① 受控删除的**线上形状**（UDS 假内核：路径 /
+  Bearer / `action_id=vhost-delete` / 单层文件名 / **不带 `content`**）；② 删站调的是删除通道且
+  本地零 `os.Remove`；③ 通道回 `E_NEED_ROOT` → 同码 + 受控删除 hint（不含 `chmod/chown`）；
+  ④ 停用后 `conf.d` 片段消失 + 插件目录备份逐字节一致 + `conf.d` 无 `.disabled` 孤儿 + 启用原样写回；
+  ⑤ `nginx -t` 失败时经受控写回滚且不残留备份。
+- `rootactions_test.go` 扩展：`file_delete` 形状断言（与 `argv` 互斥、`writes_host`、`target` 等于
+  类别目录、无静态 `purge_op`），SDK 未含该字段时**显式 skip 并写明所需版本**（不放宽成本地宽松校验）。
+- **反例自证**：把 `info.json` 的 `vhost-delete` 声明去掉 → `TestVHostDeleteDeclarationPresent` 与
+  `TestRootActionsDeclared` 同时 FAIL（实测输出见回报），恢复后全绿。
+- **真机 root e2e 未执行**：本机非 root，无法让 `kore-site` 真处于「对 `/etc/nginx/conf.d` 无写权限」
+  的状态；root 步骤与预期断言见回报（未标注通过）。
+
 ## [0.7.0] - 2026-11-24
 
 ### 变更

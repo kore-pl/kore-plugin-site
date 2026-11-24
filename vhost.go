@@ -18,21 +18,33 @@ import (
 var rootPathRE = regexp.MustCompile(`^/[A-Za-z0-9._/@+-]*$`)
 
 // vhostStore 封装 conf.d 目录下的独立 vhost 片段与生成清单。
-// 所有写操作遵循：先写 .tmp → fsync → rename（同目录原子替换）；
-// 删除只允许命中清单内且文件名带本插件前缀的路径，绝不触碰主配置。
+// 写/删都走内核受控通道（file_write / file_delete）；未接内核时（单测、本地开发）
+// 回落成同目录原子写与 os.Remove，保持本地可用。删除只允许命中清单内且文件名带
+// 本插件前缀的路径，绝不触碰主配置。
 type vhostStore struct {
 	dir string
 	// writer 是 vhost 片段的写通道（ADR-0052 K4）：生产 = 内核受控写 file_write，
 	// 测试 / 本地未接内核时为 nil（回落到同目录原子写，保持单测与开发可用）。
 	writer vhostWriteFunc
+	// deleter 是 vhost 片段的删除通道（ADR-0053）：生产 = 内核受控删除 file_delete，
+	// 测试 / 本地未接内核时为 nil（回落到 os.Remove）。装 root 后插件对 conf.d 没有
+	// 目录写权限，unlink 会 EACCES——所以生产必须走通道，回落只服务本地与单测。
+	deleter vhostDeleteFunc
 }
 
 // vhostWriteFunc 写一个 vhost 片段；domain 用于生成 kore-site-<domain>.conf 文件名。
 type vhostWriteFunc func(domain string, content []byte) error
 
+// vhostDeleteFunc 删一个 vhost 片段；domain 用于定位 kore-site-<domain>.conf。
+type vhostDeleteFunc func(domain string) error
+
 // newVHostStore 用当前配置的 conf.d 目录构造 store。
 func newVHostStore() *vhostStore {
-	return &vhostStore{dir: vhostDir(), writer: vhostWriteFuncFromEnv()}
+	return &vhostStore{
+		dir:     vhostDir(),
+		writer:  vhostWriteFuncFromEnv(),
+		deleter: vhostDeleteFuncFromEnv(),
+	}
 }
 
 // stateDir 返回清单与锁的落盘目录：生产是 KORE_STATE_DIR（插件私有、可写），
@@ -62,6 +74,25 @@ func (s *vhostStore) writeVHost(domain string, content []byte) error {
 
 // usesChannel 报告当前是否走内核受控写（备份由内核负责，插件不再写同目录备份）。
 func (s *vhostStore) usesChannel() bool { return s.writer != nil }
+
+// usesDeleteChannel 报告当前是否走内核受控删除。
+func (s *vhostStore) usesDeleteChannel() bool { return s.deleter != nil }
+
+// deleteVHost 删除 conf.d 里本插件的 vhost 片段：通道优先，未接内核时回落 os.Remove。
+func (s *vhostStore) deleteVHost(domain string) error {
+	if s.deleter != nil {
+		return s.deleter(domain)
+	}
+	if err := os.Remove(vhostPath(domain)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// disabledPath 是停用态副本的落点（插件自有目录优先），与 disabledVHostPath 同口径。
+func (s *vhostStore) disabledPath(domain string) string {
+	return filepath.Join(s.stateDir(), vhostFileName(domain)+disabledSuffix)
+}
 
 // manifestLockPath 返回清单锁文件路径。
 //
@@ -340,8 +371,9 @@ func (s *vhostStore) delete(domain string) (string, bool, *pluginapi.Error) {
 	return path, deleted, perr
 }
 
-// deleteWithBackup 在删除前把原片段备份到同目录（非 .conf 后缀，不会被 include），
-// 供校验/重载失败时回滚，也留下可审计的删除记录。
+// deleteWithBackup 在删除前把原片段另存一份（非 .conf 后缀，不会被 include），
+// 供校验/重载失败时回滚，也留下可审计的删除记录。备份落在插件可写目录——生产
+// conf.d 对插件不可写，同目录备份会 EACCES（内核另有 <install>/data/backups 强制备份）。
 // 返回 (路径, 备份路径, 是否真的删除, error)。
 //
 // 与 create 同理：删 vhost 与摘清单必须与并发写者互斥，否则一次 delete 的
@@ -387,19 +419,25 @@ func (s *vhostStore) deleteLocked(domain string) (string, string, bool, *plugina
 	if err := s.validateManagedPath(managed); err != nil {
 		return "", "", false, internalErr("清单路径校验失败: " + err.Error())
 	}
-	backup := ""
+	var original []byte
 	if _, statErr := os.Stat(managed); statErr == nil {
-		original, readErr := os.ReadFile(managed)
+		data, readErr := os.ReadFile(managed)
 		if readErr != nil {
 			return "", "", false, internalErr("读取待删除 vhost 以备份失败: " + readErr.Error())
 		}
-		backup = filepath.Join(s.dir, backupName(domain, time.Now()))
+		original = data
+	}
+	// 走受控删除时备份由内核强制完成（<install>/data/backups，失败即中止删除），
+	// 插件不再写第二份；只有回落本地 os.Remove 时才需要自带备份。
+	backup := ""
+	if !s.usesDeleteChannel() && original != nil {
+		backup = filepath.Join(s.stateDir(), backupName(domain, time.Now()))
 		if err := atomicWrite(backup, original); err != nil {
 			return "", "", false, internalErr("备份待删除 vhost 失败: " + err.Error())
 		}
 	}
-	if err := os.Remove(managed); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", "", false, internalErr("删除 vhost 失败: " + err.Error())
+	if err := s.deleteVHost(domain); err != nil {
+		return "", "", false, vhostDeleteErr(err)
 	}
 	next := m
 	next.Sites = make(map[string]string, len(m.Sites))
@@ -410,15 +448,24 @@ func (s *vhostStore) deleteLocked(domain string) (string, string, bool, *plugina
 	}
 	if err := atomicWrite(s.manifestPath(), encode(next)); err != nil {
 		// 清单写失败：把片段恢复，避免"文件被删但清单还记着"的悬挂状态。
-		if backup != "" {
+		// 恢复也必须走写通道——conf.d 对插件不可写，os.Rename 会 EACCES。
+		switch {
+		case s.usesChannel() && original != nil:
+			if restoreErr := s.writeVHost(domain, original); restoreErr != nil {
+				return "", "", false, internalErr("更新站点清单失败且恢复 vhost 失败: " + err.Error() + "; " + restoreErr.Error())
+			}
+		case backup != "":
 			if restoreErr := os.Rename(backup, managed); restoreErr != nil {
 				return "", "", false, internalErr("更新站点清单失败且恢复 vhost 失败: " + err.Error() + "; " + restoreErr.Error())
 			}
 		}
 		return "", "", false, internalErr("更新站点清单失败: " + err.Error())
 	}
-	// 停用态副本也应随删除一并清理，避免 conf.d 里留下无法管理的孤儿文件。
-	_ = os.Remove(disabledVHostPath(domain))
+	// 停用态副本随删除一并清理：先清插件自有目录的备份，再尽力清 conf.d 里
+	// v0.7.0 遗留的 <name>.conf.disabled（非 root 会 EACCES，但它不被 *.conf 匹配，
+	// 留着不影响 nginx；新版本不再往 conf.d 写这种副本）。
+	_ = os.Remove(s.disabledPath(domain))
+	_ = os.Remove(vhostPath(domain) + disabledSuffix)
 	return path, backup, true, nil
 }
 

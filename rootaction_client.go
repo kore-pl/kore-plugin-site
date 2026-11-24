@@ -179,6 +179,37 @@ func vhostWriteFuncFromEnv() vhostWriteFunc {
 	return client.WriteVHost
 }
 
+// vhostDeleteRequest 是 file_delete 动作的请求体（ADR-0053）：只有 action_id + 单层文件名。
+//
+// 与 file_write 的差别只有「没有 content」——内核明确拒绝带正文的删除请求
+// （两条语义不许混在一条请求里），所以这里**不提供** content 字段。
+type vhostDeleteRequest struct {
+	ActionID string   `json:"action_id"`
+	Args     []string `json:"args"`
+}
+
+// DeleteVHost 经内核受控删除通道删掉 conf.d 下本插件的 vhost 片段。
+//
+// 不 exec 任何命令、也不由插件进程 os.Remove：装 root 后 kore-site 对 conf.d 无目录
+// 写权限，unlink 同样是 DAC 失败。内核按 info.json 的 file_delete 声明做
+// 归属校验（kore-<plugin>-*.conf）→ 删前属主复核 → 强制备份 → 审计 → unlink。
+func (c *rootActionClient) DeleteVHost(domain string) error {
+	_, err := c.post(vhostDeleteRequest{
+		ActionID: rootActionVHostDelete,
+		Args:     []string{vhostFileName(domain)},
+	})
+	return err
+}
+
+// vhostDeleteFuncFromEnv 在通道三要素齐备时返回受控删除调用面；缺一返回 nil。
+func vhostDeleteFuncFromEnv() vhostDeleteFunc {
+	client := newRootActionClient()
+	if client == nil {
+		return nil
+	}
+	return client.DeleteVHost
+}
+
 // post 是通道请求的公共 HTTP 层：序列化 → UDS → 解析协议错误 / 结果。
 func (c *rootActionClient) post(payload any) (rootActionOutput, error) {
 	body, err := json.Marshal(payload)

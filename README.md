@@ -27,7 +27,7 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 | `site.unsetProxy` / `unsetProxy` | 移除反代块。 |
 | `site.setRedirect` / `setRedirect` | `location = <from_path>` 精确匹配重定向，`code` 默认 301、只允许 301/302。 |
 | `site.unsetRedirect` / `unsetRedirect` | 按 `from_path` 删除重定向（不存在时幂等）。 |
-| `site.disable` / `site.enable` | 把 vhost 改名为 `.conf.disabled` / 改回 `.conf` 后 test+reload；配置不删。 |
+| `site.disable` / `site.enable` | 停用 = 内容备份到插件自有目录（`KORE_STATE_DIR`，见 `disabled_path`）+ 内核受控删除 conf.d 片段；启用 = 受控写写回 + 删备份。均 test+reload，失败回滚，配置不删、conf.d 不留 `.disabled` 副本。 |
 | `site.setIndex` / `setIndex` | 设置 `index` 指令，默认 `index.html index.htm index.php`。 |
 | `site.clone` / `clone` | 克隆站点 `{source_domain, new_domain, root?, copy_root?}`：复制 vhost 全量配置（SSL/伪静态/反代/重定向/index）；`copy_root=true` 仅复制 `KORE_STATE_DIR` 内的站点根（ADR-0023）。 |
 | `site.setPassword` / `clearPassword` | 站点级 Basic 认证：`setPassword {domain, username, password}` 写入 apr1 哈希到 vhost 同目录 htpasswd（密码不回显）；`clearPassword {domain}` 移除 auth 段并删除密码文件。 |
@@ -98,8 +98,10 @@ L2 配置的**唯一事实来源就是 vhost 文件本身**：受管片段用注
   因此互相设置时会自动清掉对方，并在结果里回 `rewrite_cleared` / `proxy_cleared`。
 - **重定向**：`from_path` 必须 `/` 开头且不含 `..`；`to_url` 只允许 `http://` / `https://` 或站内 `/` 路径
   （`javascript:` / `data:` / 协议相对 `//host` 一律拒绝），字符集排除引号、分号、`#` 与空白。
-- **启停**：`disable` 只把 `<domain>.conf` 改名为 `<domain>.conf.disabled`（不被 `conf.d/*.conf` 匹配），
-  配置与备份全部保留；`enable` 改回。任一步 test/reload 失败都会改回原名。
+- **启停**：`disable` 把 `<domain>.conf` 的内容备份到插件自有目录（`KORE_STATE_DIR/kore-site-<domain>.conf.disabled`，
+  不会被 nginx include），再经内核受控删除摘掉 conf.d 片段；`enable` 从备份经受控写写回 conf.d 并删除备份。
+  不再在 conf.d 里做 `rename` 留 `.conf.disabled` 副本——装 root 后那需要目录写权限（ADR-0053）。
+  任一步 test/reload 失败都会经受控写/受控删除回滚到动作前状态。
 - **单文件 ≤200 行**：能力按 `ssl.go` / `rewrite.go` / `proxy.go` / `redirect.go` / `toggle.go` /
   `index.go` / `get.go` 拆分，解析与渲染分别是 `parse.go` / `render.go`。
 
@@ -116,19 +118,25 @@ L2 配置的**唯一事实来源就是 vhost 文件本身**：受管片段用注
 
 ## 权限模型（root actions）
 
-插件降权后以 `kore-site` 用户运行，**自身永远不是 root**。三条需要 root 的 nginx 命令因此声明为 `root_actions`，
-由内核按固定 argv 执行（ADR-0018 / ADR-0022，`info.json` 与代码常量双向对齐由 `rootactions_test.go` 守护）：
+插件降权后以 `kore-site` 用户运行，**自身永远不是 root**。需要 root 的动作（三条 nginx 命令 + 一条受控写 +
+一条受控删除）因此声明为 `root_actions`，由内核执行/分派（ADR-0018 / ADR-0022 / ADR-0052 / ADR-0053，
+`info.json` 与代码常量双向对齐由 `rootactions_test.go` 守护）：
 
-| action id | 固定 argv | 用途 |
+| action id | 形状 | 用途 |
 | --- | --- | --- |
-| `nginx-test` | `nginx -t` | 配置语法检查 |
-| `nginx-reload` | `nginx -s reload` | 热重载（**不给** `stop`/`quit`：停服等于 DoS） |
-| `nginx-dump` | `nginx -T` | 打印已加载配置并校验（只读，用于读 `/etc/nginx` 下现有 vhost） |
+| `nginx-test` | `argv: nginx -t` | 配置语法检查 |
+| `nginx-reload` | `argv: nginx -s reload` | 热重载（**不给** `stop`/`quit`：停服等于 DoS） |
+| `nginx-dump` | `argv: nginx -T` | 打印已加载配置并校验（只读，用于读 `/etc/nginx` 下现有 vhost） |
+| `vhost-write` | `file_write{prefix_class: nginx.conf.d}` | 写 `conf.d/kore-site-<domain>.conf`（内核受控写：备份 / 原子替换 / 属主复核 / 审计 / 账本） |
+| `vhost-delete` | `file_delete{prefix_class: nginx.conf.d}` | 删同一个片段（内核受控删除：删前强制备份进 `<install>/data/backups`，账本 `purge_op=file.restore`） |
 
-三条形状在 `pkg/pluginapi/rootpolicy.go` 的 `nginx` 条目下**都没有 Tail**，因此运行时**追加任何参数都会被内核拒绝**——
-提权通道不会退化成「任意 nginx 调用」。通道调用面也没有 `args` 字段（少一个入参就少一条注入面）。
+三条 nginx 形状在 `pkg/pluginapi/rootpolicy.go` 的 `nginx` 条目下**都没有 Tail**，因此运行时**追加任何参数都会被内核拒绝**——
+提权通道不会退化成「任意 nginx 调用」。exec 动作的调用面没有 `args` 字段；`file_write` / `file_delete` 只接受
+**单层文件名** `kore-site-<domain>.conf`，目录来自协议类别、插件不能自报，文件名归属前缀 `kore-<plugin>-` 由内核校验
+（A 插件删不掉 B 插件的片段）。
 
-**执行路径**：`site.create` 等写路径 → 写 vhost（插件自身）→ `nginx -t` → `nginx -s reload`。
+**执行路径**：`site.create` 等写路径 → 受控写 `vhost-write` → `nginx -t` → `nginx -s reload`；
+删站/停用走受控删除 `vhost-delete`，启用走受控写写回。
 host 模式且 `KORE_KERNEL_SOCK` / `KORE_PLUGIN_TOKEN` / `KORE_PLUGIN_ID` 齐备时，后两步走内核 UDS 上的
 `POST /api/v1/plugins/site/root-action`（Bearer token，只允许调用本插件已声明的动作）；docker 模式不走通道
 （命令是 `docker exec … nginx`，容器内执行，与宿主 root 无关）。
@@ -137,16 +145,15 @@ host 模式且 `KORE_KERNEL_SOCK` / `KORE_PLUGIN_TOKEN` / `KORE_PLUGIN_ID` 齐�
 
 - `nginx` 命令因权限被拒（内核回 `E_NEED_ROOT`，或直连 exec 输出含 `permission denied`）→ 返回 `E_NEED_ROOT`，
   `detail.hint` 给出「以 root 启动 Kore，插件经通道执行」，插件进程不需要 root。
-- 写 vhost 失败且 `conf.d` **属主是 root、当前用户非 root** → 同样返回 `E_NEED_ROOT`，hint 给出目录授权动作
-  （ADR-0052 已否决目录授权）——写 vhost 走内核受控写通道 `vhost-write`（`file_write`），
-  请以 root 启动 Kore；插件进程不需要 root，也不要给 conf.d 目录 `chgrp/chmod/setfacl`。属主不是 root 时权限失败**不**归因 root（保持 `E_INTERNAL`）：
-  root 也解决不了 DAC 位/只读挂载，误报会把人带偏。
+- 写/删 vhost 失败且内核通道回 `E_NEED_ROOT`（或本地回落遇到 `conf.d` **属主是 root、当前用户非 root**）→
+  同样返回 `E_NEED_ROOT`，hint 说明「以 root 启动 Kore，走内核受控写/删除通道；插件自身不需要 root，
+  也不要给 conf.d 目录 `chgrp/chmod/setfacl`」（ADR-0052/0053 已否决目录授权）。属主不是 root 时权限失败
+  **不**归因 root（保持 `E_INTERNAL`）：root 也解决不了 DAC 位/只读挂载，误报会把人带偏。
 
-**写 vhost 为什么不在 root action 里**：ADR-0022 的 13 条受控命令没有文件写原语；ADR-0028 的受控文件写
-（`internal/core/filewrite`）一期白名单只有 sshd/sysctl/limits/logrotate 四个 drop-in 目录，**不含
-`/etc/nginx/conf.d`**，且尚未接线到 root-action 执行路径。把该代理指向前缀需要先改 ADR-0028 §3（复审条件 #1），
-属内核侧决策，本插件不自作主张。因此写路径的可行解法是文件系统授权（hint 已给出），或把 `host_conf_dir`
-指到插件可写目录并在宿主 `nginx.conf` 里自行 include。
+**为什么写/删 vhost 走 `file_write` / `file_delete` 而不是目录授权**：ADR-0022 的受控命令没有文件原语；
+ADR-0052 把 `/etc/nginx/conf.d` 加进受控写白名单（类别 `nginx.conf.d`），ADR-0053 补上对称的受控删除。
+把 conf.d 目录的写权限交给 `kore-site` 已被明令否决（实测 `access_log` 注入 = root RCE），所以
+`chgrp/chmod/setfacl` 这条 hint 全部删除，正确出路只有「以 root 启动 Kore，走内核受控通道」。
 
 **未验证项**：本机以非 root 运行，只实测了「非 root 时返回 `E_NEED_ROOT` + hint + 不落半成品」
 （`tests/boundary/needroot_test.go`）。**root 下的成功路径（通道真实执行 `nginx -t`/`-s reload`）未在本机验证**，

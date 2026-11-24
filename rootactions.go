@@ -20,6 +20,11 @@ const (
 	// /etc/nginx/conf.d，不执行外部命令。文件名与目录由协议类别 nginx.conf.d 决定，
 	// 插件只提供单层文件名 kore-site-<domain>.conf 与正文。
 	rootActionVHostWrite = "vhost-write"
+	// rootActionVHostDelete 是 file_delete 受控删除（ADR-0053）：删 conf.d 里本插件的
+	// vhost 片段。删站/停用不再由插件进程 os.Remove——装 root 后 kore-site 对 conf.d
+	// 没有目录写权限，那条路必然 DAC 失败；删除前内核强制备份进 <install>/data/backups，
+	// 账本 purge_op 恒为 file.restore，所以删除仍是可回滚动作。
+	rootActionVHostDelete = "vhost-delete"
 )
 
 // codeRootActionIDs 是代码**真正会调用**的动作 id，顺序即 info.json 的声明顺序。
@@ -30,4 +35,5 @@ var codeRootActionIDs = []string{
 	rootActionNginxReload,
 	rootActionNginxDump,
 	rootActionVHostWrite,
+	rootActionVHostDelete,
 }

@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 // L2 配置以 vhost 文件本身为唯一事实来源：受管片段用注释标记块
 // （"# >>> kore-site:<key> >>>" … "# <<< kore-site:<key> <<<"）括起来，
@@ -66,8 +70,8 @@ type siteState struct {
 	PHP *phpState
 }
 
-// disabledSuffix 是停用站点的 vhost 后缀：conf.d/*.conf 不会匹配它，
-// 因此改名即等于"从 nginx 配置里摘掉"，而配置本身完整保留。
+// disabledSuffix 是停用站点的副本后缀：conf.d/*.conf 不会匹配它，
+// 因此「从 conf.d 移走」即等于「从 nginx 配置里摘掉」，而配置本身完整保留。
 const disabledSuffix = ".disabled"
 
 // siteDomainParams 是只带 domain 的入参（unbindSSL / get / getRewrite 等共用）。
@@ -136,7 +140,19 @@ func directiveValue(body []string, name string) string {
 	return ""
 }
 
-// disabledVHostPath 返回停用态 vhost 路径（vhost 原路径 + .disabled）。
+// disabledVHostPath 返回停用态副本的落盘路径。
+//
+// ADR-0053 之后停用**不再**在 conf.d 里做 os.Rename：装 root 后 kore-site 对 conf.d
+// 没有目录写权限（rename 需要目录写权限），那条路必然 DAC 失败。新口径是
+// 「内容备份到插件自有目录 + 内核受控删除」——备份目录与站点清单同源：
+// KORE_STATE_DIR（插件私有、可写）优先，未注入时回落 conf.d（本地开发与单测布局）。
+//
+// 文件名仍是 kore-site-<domain>.conf.disabled：它落在 conf.d 时不会被 nginx include
+// （只匹配 *.conf），落在插件目录时更不会——所以两种布局下都不存在「孤儿配置」。
 func disabledVHostPath(domain string) string {
-	return vhostPath(domain) + disabledSuffix
+	dir := vhostDir()
+	if stateDir := strings.TrimSpace(os.Getenv("KORE_STATE_DIR")); stateDir != "" {
+		dir = stateDir
+	}
+	return filepath.Join(dir, vhostFileName(domain)+disabledSuffix)
 }

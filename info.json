@@ -1,7 +1,7 @@
 {
   "id": "site",
   "name": "Nginx 站点管理插件",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "protocol": "kore.plugin.v1",
   "lifecycle": "resident",
   "depth_level": "production",
@@ -49,6 +49,15 @@
       "writes_host": true,
       "target": "/etc/nginx/conf.d/",
       "description": "写站点 vhost 片段（内核受控写，ADR-0052）：文件名 kore-site-<domain>.conf、属主 root:root 0644；不执行外部命令"
+    },
+    {
+      "id": "vhost-delete",
+      "file_delete": {
+        "prefix_class": "nginx.conf.d"
+      },
+      "writes_host": true,
+      "target": "/etc/nginx/conf.d/",
+      "description": "删除站点 vhost 片段（内核受控删除，ADR-0053）：文件名 kore-site-<domain>.conf；删前内核强制备份进 <install>/data/backups，账本 purge_op=file.restore；不执行外部命令"
     }
   ],
   "method_capabilities": {
@@ -91,5 +100,5 @@
     "web",
     "ops"
   ],
-  "size_bytes": 2950625
+  "size_bytes": 2954081
 }

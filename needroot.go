@@ -28,6 +28,10 @@ const (
 	hintConfDirWrite = "写 vhost 走内核受控写通道（ADR-0052），不需要给插件用户 conf.d 目录写权限：" +
 		"请以 root 启动 Kore（sudo systemctl restart kore）后重试；插件进程自身不持有 root，" +
 		"也不应把 conf.d 目录的写权限交给插件用户（那条路已被 ADR-0052 否决）。"
+	// hintVHostDeleteChannel 面向「受控删除不可用 / 内核非 root / 声明缺失」。
+	hintVHostDeleteChannel = "删除 vhost 走内核受控删除通道（ADR-0053）：请以 root 启动 Kore" +
+		"（sudo systemctl restart kore）后重试；插件自身不需要 root，也不需要给 conf.d 目录授权。" +
+		"若内核已是 root 仍失败，请确认插件版本包含 file_delete 声明（旧内核收到该动作会 E_INVALID）。"
 	// hintVHostChannel 面向「通道不可用 / 内核非 root / 声明缺失」：同一个写路径的降级口径。
 	hintVHostChannel = "写 vhost 走内核受控写通道：请以 root 启动 Kore（sudo systemctl restart kore）后重试；" +
 		"插件自身不需要 root，也不需要给 conf.d 目录授权。若内核已是 root 仍失败，" +
@@ -105,6 +109,29 @@ func vhostWriteErr(err error) *pluginapi.Error {
 		return perr
 	}
 	return internalErr("写入 vhost 失败: " + err.Error())
+}
+
+// vhostDeleteErr 把受控删除失败翻译成协议错误：
+//   - 内核通道回 E_NEED_ROOT → 同码 + 受控删除口径 hint；
+//   - 通道回其它协议错误 → 保留 code/message/hint（不吞、不改写成成功）；
+//   - 本地回落 os.Remove 遇「root 属主 + 非 root」→ E_NEED_ROOT（旧路径的边界用例）。
+func vhostDeleteErr(err error) *pluginapi.Error {
+	var failure *rootActionFailure
+	if errors.As(err, &failure) {
+		if failure.Code == pluginapi.E_NEED_ROOT {
+			return needRootErr(failure.Message, hintVHostDeleteChannel)
+		}
+		detail, mErr := json.Marshal(map[string]string{"hint": failure.Hint})
+		protocolErr := &pluginapi.Error{Code: failure.Code, Message: failure.Message}
+		if mErr == nil {
+			protocolErr.Detail = detail
+		}
+		return protocolErr
+	}
+	if perr := needRootForConfDir(vhostDir(), err); perr != nil {
+		return perr
+	}
+	return internalErr("删除 vhost 失败: " + err.Error())
 }
 
 // needRootForConfDir 在「conf.d 不可写 **且** 属主是 root **且** 当前进程非 root」时

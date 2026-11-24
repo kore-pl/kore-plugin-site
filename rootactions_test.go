@@ -38,13 +38,21 @@ type declaredFileWrite struct {
 }
 
 // declaredRootAction 是「协议之外的声明字段」的本地定形。
+type declaredFileDelete struct {
+	PrefixClass string `json:"prefix_class"`
+}
+
 type declaredRootAction struct {
-	ID           string             `json:"id"`
-	Argv         []string           `json:"argv"`
-	WritesHost   bool               `json:"writes_host"`
-	Target       string             `json:"target"`
-	Irreversible bool               `json:"irreversible"`
-	FileWrite    *declaredFileWrite `json:"file_write"`
+	ID           string              `json:"id"`
+	Argv         []string            `json:"argv"`
+	WritesHost   bool                `json:"writes_host"`
+	Target       string              `json:"target"`
+	Irreversible bool                `json:"irreversible"`
+	FileWrite    *declaredFileWrite  `json:"file_write"`
+	FileDelete   *declaredFileDelete `json:"file_delete"`
+	// PurgeOp 只用来断言「声明里不得出现静态 purge_op」：删除的回滚目标只能由内核
+	// 按本次备份路径运行时生成，静态写死会让账本回滚错对象。
+	PurgeOp json.RawMessage `json:"purge_op"`
 }
 
 // nginxConfDDir 是协议类别 nginx.conf.d 的目录（pluginapi.FileWritePrefixClasses 的
@@ -80,6 +88,15 @@ func sdkHasFileWrite() bool {
 	return ok
 }
 
+// sdkHasFileDelete 报告当前 SDK 的 RootAction 是否含 FileDelete 字段。
+//
+// 与 sdkHasFileWrite 同口径：SDK 尚无该字段时显式 skip 并写明所需版本（pluginapi
+// v0.3.0），**不得**把协议校验改写成一份本地宽松校验冒充通过。
+func sdkHasFileDelete() bool {
+	_, ok := reflect.TypeOf(pluginapi.RootAction{}).FieldByName("FileDelete")
+	return ok
+}
+
 // TestRootActionsDeclared 断言每条声明通过对应形状校验，且与代码调用面双向一致。
 //
 // 这条用例就是「反例自证」的靶子：把 info.json 里的 root_actions 删掉或删一条，
@@ -104,6 +121,32 @@ func TestRootActionsDeclared(t *testing.T) {
 		if index >= len(codeRootActionIDs) || action.ID != codeRootActionIDs[index] {
 			t.Fatalf("root_actions[%d] id=%q 与 codeRootActionIDs[%d]=%q 不一致（声明顺序即代码顺序）",
 				index, action.ID, index, codeRootActionIDs[index])
+		}
+		if declared.FileDelete != nil {
+			// file_delete 的本地形状断言（SDK 未含该字段时的唯一可执行校验）。
+			if len(declared.Argv) != 0 {
+				t.Fatalf("file_delete 动作 %q 不得声明 argv（删除不执行外部命令）", action.ID)
+			}
+			if !declared.WritesHost {
+				t.Fatalf("file_delete 动作 %q 必须 writes_host=true（删宿主文件要进变更账本）", action.ID)
+			}
+			if declared.Target != nginxConfDDir {
+				t.Fatalf("file_delete 动作 %q 的 target=%q 必须逐字等于类别目录 %q", action.ID, declared.Target, nginxConfDDir)
+			}
+			if len(declared.PurgeOp) != 0 {
+				t.Fatalf("file_delete 动作 %q 不得声明静态 purge_op（回滚目标由内核按备份路径运行时生成）", action.ID)
+			}
+			if declared.FileDelete.PrefixClass != "nginx.conf.d" {
+				t.Fatalf("file_delete.prefix_class=%q 期望 nginx.conf.d", declared.FileDelete.PrefixClass)
+			}
+			if !sdkHasFileDelete() {
+				t.Logf("SKIP ValidateRootAction(%q)：需要 pluginapi ≥ 含 file_delete 的版本（当前 SDK 无 RootAction.FileDelete）", action.ID)
+				continue
+			}
+			if err := pluginapi.ValidateRootAction(action); err != nil {
+				t.Fatalf("root_actions[%d] id=%q 未过 ADR-0053 协议校验: %v", index, action.ID, err)
+			}
+			continue
 		}
 		if declared.FileWrite == nil {
 			if err := pluginapi.ValidateRootAction(action); err != nil {
@@ -167,6 +210,15 @@ func TestRootActionsShape(t *testing.T) {
 			}
 			continue
 		}
+		if declared.FileDelete != nil {
+			if !declared.WritesHost {
+				t.Fatalf("file_delete 动作 %q 必须 writes_host=true", action.ID)
+			}
+			if len(action.Argv) != 0 {
+				t.Fatalf("file_delete 动作 %q 不得有 argv（删除不执行外部命令）", action.ID)
+			}
+			continue
+		}
 		if declared.WritesHost {
 			t.Fatalf("exec 动作 %q 声明了 writes_host：nginx 三条命令不直接写宿主文件", action.ID)
 		}
@@ -225,6 +277,38 @@ func TestVHostWriteDeclarationPresent(t *testing.T) {
 		return
 	}
 	t.Fatalf("info.json 未声明 %q：site.create/编辑类方法将没有受控写通道", rootActionVHostWrite)
+}
+
+// TestVHostDeleteDeclarationPresent 是删站迁移的反例自证常驻靶子：删掉 info.json 的
+// vhost-delete / file_delete 声明，本用例立刻 FAIL——删站会退回 os.Remove，装 root 后
+// kore-site 对 conf.d 没有目录写权限，必然 DAC 失败。
+func TestVHostDeleteDeclarationPresent(t *testing.T) {
+	_, local := loadDeclaredManifest(t)
+	for _, action := range local {
+		if action.ID != rootActionVHostDelete {
+			continue
+		}
+		if action.FileDelete == nil {
+			t.Fatalf("动作 %q 缺少 file_delete 声明：删站会退回 os.Remove 并被 DAC 拒绝", action.ID)
+		}
+		if action.FileDelete.PrefixClass != "nginx.conf.d" {
+			t.Fatalf("file_delete.prefix_class=%q 期望 nginx.conf.d", action.FileDelete.PrefixClass)
+		}
+		if !action.WritesHost {
+			t.Fatalf("动作 %q 必须 writes_host=true（删除要进 changes.jsonl 账本）", action.ID)
+		}
+		if action.Target != nginxConfDDir {
+			t.Fatalf("动作 %q 的 target=%q 期望 %q", action.ID, action.Target, nginxConfDDir)
+		}
+		if len(action.PurgeOp) != 0 {
+			t.Fatalf("动作 %q 不得声明静态 purge_op", action.ID)
+		}
+		if len(action.Argv) != 0 {
+			t.Fatalf("动作 %q 不得声明 argv", action.ID)
+		}
+		return
+	}
+	t.Fatalf("info.json 未声明 %q：删站/停用没有受控删除通道", rootActionVHostDelete)
 }
 
 // actionIDsOf 提取声明里的 id 列表（失败信息用）。
