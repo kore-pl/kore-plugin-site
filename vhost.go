@@ -34,9 +34,42 @@ func (s *vhostStore) manifestPath() string {
 	return filepath.Join(s.dir, manifestName)
 }
 
+// manifestLockPath 返回清单锁文件路径。
+//
+// 锁**不能**加在清单文件本身上：清单用「.tmp → fsync → rename」原子替换，
+// rename 之后清单已是新 inode，而并发实例仍握着旧 inode 的锁——互斥会静默失效。
+// 因此锁固定在一个**专用且永不 rename**的旁路文件上（非 .conf 后缀，
+// 不会被宿主的 include conf.d/*.conf 收录，也不会被本插件当成 vhost）。
+func (s *vhostStore) manifestLockPath() string {
+	return s.manifestPath() + ".lock"
+}
+
 // ensureDir 确保 conf.d 目录存在（只建目录，不改任何主配置文件）。
 func (s *vhostStore) ensureDir() error {
 	return os.MkdirAll(s.dir, 0o755)
+}
+
+// withManifestLock 在跨进程排他锁内执行 fn：fn 内的「读清单 → 改内存 → 写回」
+// 因此成为相对其他实例的原子读-改-写（RMW）。
+//
+// 只有**写者**需要这把锁：清单写到一半不会暴露给读者——atomicWrite 用 rename 交付，
+// 读者（list/get/status/inspect）任何时刻读到的都是某个完整版本，不需要参与加锁。
+// 锁文件常驻 conf.d（首次写清单时创建，0600），随实例退出由内核释放锁，不做删除，
+// 避免「删除锁文件」与「另一实例 open 同一路径」之间的竞态。
+func (s *vhostStore) withManifestLock(fn func() *pluginapi.Error) *pluginapi.Error {
+	if err := s.ensureDir(); err != nil {
+		return internalErr("创建 conf.d 目录失败: " + err.Error())
+	}
+	lockFile, err := os.OpenFile(s.manifestLockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return internalErr("打开站点清单锁失败: " + err.Error())
+	}
+	defer func() { _ = lockFile.Close() }()
+	if err := lockExclusive(lockFile); err != nil {
+		return internalErr("获取站点清单锁失败: " + err.Error())
+	}
+	defer func() { _ = unlockFile(lockFile) }()
+	return fn()
 }
 
 // loadManifest 读清单；不存在返回空清单，损坏则报 E_INTERNAL 不做破坏性覆盖。
@@ -120,7 +153,28 @@ func (s *vhostStore) validateManagedPath(path string) error {
 // create 生成 domain 的独立 vhost 片段并登记清单。
 // 覆盖已存在片段前先写带时间戳备份（同一 conf.d 目录），失败按逆序回滚。
 // 返回 (路径, 备份路径, 是否新建, error)。
+//
+// 清单是**跨进程共享的单一状态**，「读清单 → 落 vhost → 写回清单」整段必须在
+// 清单锁内完成——否则多个实例各自读到旧清单再写回，后写者覆盖先写者（丢站点）。
 func (s *vhostStore) create(p siteParams) (string, string, bool, *pluginapi.Error) {
+	var (
+		path    string
+		backup  string
+		created bool
+	)
+	perr := s.withManifestLock(func() *pluginapi.Error {
+		var lockedErr *pluginapi.Error
+		path, backup, created, lockedErr = s.createLocked(p)
+		return lockedErr
+	})
+	if perr != nil {
+		return "", "", false, perr
+	}
+	return path, backup, created, nil
+}
+
+// createLocked 是 create 的临界区，调用方必须已持有清单锁。
+func (s *vhostStore) createLocked(p siteParams) (string, string, bool, *pluginapi.Error) {
 	path := vhostPath(p.Domain)
 	if err := s.validateManagedPath(path); err != nil {
 		return "", "", false, invalidParam("非法 vhost 路径: " + err.Error())
@@ -233,7 +287,28 @@ func (s *vhostStore) delete(domain string) (string, bool, *pluginapi.Error) {
 // deleteWithBackup 在删除前把原片段备份到同目录（非 .conf 后缀，不会被 include），
 // 供校验/重载失败时回滚，也留下可审计的删除记录。
 // 返回 (路径, 备份路径, 是否真的删除, error)。
+//
+// 与 create 同理：删 vhost 与摘清单必须与并发写者互斥，否则一次 delete 的
+// 「旧清单快照 + 少一条」写回会把它人的新建站点一起抹掉。
 func (s *vhostStore) deleteWithBackup(domain string) (string, string, bool, *pluginapi.Error) {
+	var (
+		path    string
+		backup  string
+		deleted bool
+	)
+	perr := s.withManifestLock(func() *pluginapi.Error {
+		var lockedErr *pluginapi.Error
+		path, backup, deleted, lockedErr = s.deleteLocked(domain)
+		return lockedErr
+	})
+	if perr != nil {
+		return path, backup, deleted, perr
+	}
+	return path, backup, deleted, nil
+}
+
+// deleteLocked 是 deleteWithBackup 的临界区，调用方必须已持有清单锁。
+func (s *vhostStore) deleteLocked(domain string) (string, string, bool, *pluginapi.Error) {
 	path := vhostPath(domain)
 	if err := s.validateManagedPath(path); err != nil {
 		return "", "", false, invalidParam("非法 vhost 路径: " + err.Error())

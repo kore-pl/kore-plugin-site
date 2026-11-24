@@ -2,6 +2,27 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.4.4] - 2026-11-24
+
+### 修复
+
+- **并发建站丢站点（P1 数据丢失）**：`kore-site-manifest.json` 的「读-改-写」没有跨进程互斥，
+  多实例共享同一 conf.d 时（内核重启/升级期间新旧实例重叠，或两实例共用配置目录），
+  各自读到旧清单再写回，后写者覆盖先写者。实测 8 个真实进程并发建站后清单只剩 1–2 条，
+  文件层面的 vhost 都在、`site.list` 却漏站点。
+  修复：`site.create` 与 `site.delete` 的「读清单 → 落 vhost → 写回清单」整段进入
+  `flock`（Windows 为 `LockFileEx`）排他临界区；锁固定在旁路文件
+  `kore-site-manifest.json.lock` 上（清单本身用 rename 原子替换，锁在清单 inode 上会随替换失效）。
+  读者（`site.list` / `site.get` / `site.status` / `site.clone` / 配置读取）**不加锁**：
+  rename 保证任何时刻读到的都是某个完整版本，避免无谓的读侧串行化。
+- 锁由内核在进程退出时释放（故障注入用例会 `SIGKILL` 插件），不会留下悬挂锁；
+  遇到不支持跨进程文件锁的平台显式报错，不退化成无声的进程内互斥。
+- 清单**文件格式与语义不变**（`version: 1`，同字段同含义），不涉及协议兼容性变更。
+- 边界用例新增 `TestBoundaryConcurrencyManifestNoLostUpdate`：8 实例并发建站后断言
+  ① 清单条目数 == 8、② 每个 vhost 的 `server_name` 唯一且无交叉串扰、③ 无 `.tmp` 残留 / 无数据竞争
+  （`-race` 插桩进程），并断言事后 `site.list` 返回 8 条。修复前该用例稳定 FAIL（清单只剩 1 条）。
+- 版本 0.4.3 → 0.4.4；manifest.json 同步。
+
 ## [0.4.3] - 2026-11-23
 
 ### 变更
