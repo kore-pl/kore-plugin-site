@@ -91,6 +91,9 @@ func (s *siteService) toggle(domain string, enable bool) (siteToggleResult, *plu
 		return siteToggleResult{}, perr
 	}
 	if err := os.Rename(from, to); err != nil {
+		if perr := needRootForConfDir(s.store.dir, err); perr != nil {
+			return siteToggleResult{}, perr
+		}
 		return siteToggleResult{}, internalErr("重命名 vhost 失败: " + err.Error())
 	}
 	rollback := func() error { return os.Rename(to, from) }
@@ -101,6 +104,9 @@ func (s *siteService) toggle(domain string, enable bool) (siteToggleResult, *plu
 			return siteToggleResult{}, internalErr("nginx 配置校验失败且回滚失败: " + rbErr.Error() +
 				"；校验输出: " + describeCommand(testOutcome))
 		}
+		if perr := needRootCommandErr(testOutcome, "nginx 配置校验"); perr != nil {
+			return siteToggleResult{}, perr
+		}
 		return siteToggleResult{}, invalidParam("nginx 配置校验失败，已恢复原状态: " + describeCommand(testOutcome))
 	}
 
@@ -109,6 +115,9 @@ func (s *siteService) toggle(domain string, enable bool) (siteToggleResult, *plu
 		if rbErr := rollback(); rbErr != nil {
 			return siteToggleResult{}, internalErr("nginx 重载失败且回滚失败: " + rbErr.Error() +
 				"；重载输出: " + describeCommand(reloadOutcome))
+		}
+		if perr := needRootCommandErr(reloadOutcome, "nginx 重载"); perr != nil {
+			return siteToggleResult{}, perr
 		}
 		return siteToggleResult{}, &pluginapi.Error{
 			Code:    pluginapi.E_UPSTREAM,

@@ -60,11 +60,18 @@ func (s *siteService) create(p siteParams) (siteCreateResult, *pluginapi.Error) 
 			return siteCreateResult{}, internalErr(fmt.Sprintf(
 				"nginx 配置校验失败且回滚失败: %v；校验输出: %s", rbErr, describeCommand(testOutcome)))
 		}
+		if perr := needRootCommandErr(testOutcome, "nginx 配置校验"); perr != nil {
+			return siteCreateResult{}, perr
+		}
 		return siteCreateResult{}, invalidParam("nginx 配置校验失败，已回滚 vhost: " + describeCommand(testOutcome))
 	}
 
 	reloadOutcome := s.runner.runReload()
 	if reloadOutcome.ran && reloadOutcome.err != nil {
+		if perr := needRootCommandErr(reloadOutcome, "nginx 重载"); perr != nil {
+			perr.Message = "站点已写入但 nginx 重载失败，当前未生效（vhost: " + path + "）：" + perr.Message
+			return siteCreateResult{}, perr
+		}
 		// 不回滚：站点已经写入，只是尚未被 nginx 加载；明确告知调用方当前未生效。
 		return siteCreateResult{}, &pluginapi.Error{
 			Code: pluginapi.E_UPSTREAM,
@@ -121,6 +128,9 @@ func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error)
 			return siteDeleteResult{}, internalErr(fmt.Sprintf(
 				"删除后 nginx 配置校验失败且恢复备份失败: %v；校验输出: %s", rbErr, describeCommand(testOutcome)))
 		}
+		if perr := needRootCommandErr(testOutcome, "nginx 配置校验"); perr != nil {
+			return siteDeleteResult{}, perr
+		}
 		return siteDeleteResult{}, invalidParam("删除后 nginx 配置校验失败，已恢复备份: " + describeCommand(testOutcome))
 	}
 
@@ -129,6 +139,9 @@ func (s *siteService) delete(domain string) (siteDeleteResult, *pluginapi.Error)
 		if rbErr := restoreSnapshots(confBefore, manifestBefore); rbErr != nil {
 			return siteDeleteResult{}, internalErr(fmt.Sprintf(
 				"删除后 nginx 重载失败且恢复备份失败: %v；重载输出: %s", rbErr, describeCommand(reloadOutcome)))
+		}
+		if perr := needRootCommandErr(reloadOutcome, "nginx 重载"); perr != nil {
+			return siteDeleteResult{}, perr
 		}
 		return siteDeleteResult{}, &pluginapi.Error{
 			Code:    pluginapi.E_UPSTREAM,

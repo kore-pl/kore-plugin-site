@@ -5,7 +5,7 @@ kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.de
 ## 定位与边界
 
 - 协议：`kore.plugin.v1`，`lifecycle = resident`，唯一第三方依赖 `github.com/pengtang1024/kore/pkg/pluginapi v0.1.1`（其余为标准库）。
-- **建站链路**：原子写独立 `conf.d/kore-site-<domain>.conf` → `nginx -t` 校验（失败回滚并回 `E_INVALID`）→ `nginx -s reload`（失败回 `E_UPSTREAM`，明确"已写入但未生效"）。
+- **建站链路**：原子写独立 `conf.d/kore-site-<domain>.conf` → `nginx -t` 校验（失败回滚并回 `E_INVALID`）→ `nginx -s reload`（失败回 `E_UPSTREAM`，明确"已写入但未生效"）。host 模式下 `nginx -t/-T/-s reload` 经**内核提权通道**执行（插件自身不是 root，见「权限模型」）。
 - 不碰宿主 nginx 主配置（`nginx.conf`）；只写独立 vhost 片段，由宿主既有的 `conf.d/*.conf` include 引入。
 - 不使用 `default_server`；`default_server=true` 的创建请求直接回 `E_INVALID`（红队 R6）。
 - **不内置、不捆绑** nginx/caddy/httpd 二进制（裁决37）：`nginx_mode=auto` 先找宿主 `nginx`，找不到再找运行中的 nginx 容器并改用 `docker exec`；也可强制 `host` / `docker` / `off`。
@@ -103,6 +103,44 @@ L2 配置的**唯一事实来源就是 vhost 文件本身**：受管片段用注
 - **写路径前置校验**（仅 docker 模式）：宿主 `host_conf_dir` 必须存在且可写 → 容器必须存在（`docker inspect` 失败回 `E_UPSTREAM`）→ 容器内 `docker_conf_dir` 必须确实由该宿主目录挂载而来（否则 `E_INVALID` 并给出应改成的路径）。这样不会出现「配置写成功但容器读不到」的假生效。
 - 只读方法（`list` / `status`）不做额外 `docker inspect`：容器不存在时由 `nginx -t` 的真实失败出现在 `test_output` 里（不是静默 skipped），不因一次查看而放大容器调用。`status` 在 docker 模式只额外执行一次目录探测 `docker exec <container> test -d <root>`（20s 超时，用于三态 `site_dir_state`）。
 
+## 权限模型（root actions）
+
+插件降权后以 `kore-site` 用户运行，**自身永远不是 root**。三条需要 root 的 nginx 命令因此声明为 `root_actions`，
+由内核按固定 argv 执行（ADR-0018 / ADR-0022，`info.json` 与代码常量双向对齐由 `rootactions_test.go` 守护）：
+
+| action id | 固定 argv | 用途 |
+| --- | --- | --- |
+| `nginx-test` | `nginx -t` | 配置语法检查 |
+| `nginx-reload` | `nginx -s reload` | 热重载（**不给** `stop`/`quit`：停服等于 DoS） |
+| `nginx-dump` | `nginx -T` | 打印已加载配置并校验（只读，用于读 `/etc/nginx` 下现有 vhost） |
+
+三条形状在 `pkg/pluginapi/rootpolicy.go` 的 `nginx` 条目下**都没有 Tail**，因此运行时**追加任何参数都会被内核拒绝**——
+提权通道不会退化成「任意 nginx 调用」。通道调用面也没有 `args` 字段（少一个入参就少一条注入面）。
+
+**执行路径**：`site.create` 等写路径 → 写 vhost（插件自身）→ `nginx -t` → `nginx -s reload`。
+host 模式且 `KORE_KERNEL_SOCK` / `KORE_PLUGIN_TOKEN` / `KORE_PLUGIN_ID` 齐备时，后两步走内核 UDS 上的
+`POST /api/v1/plugins/site/root-action`（Bearer token，只允许调用本插件已声明的动作）；docker 模式不走通道
+（命令是 `docker exec … nginx`，容器内执行，与宿主 root 无关）。
+
+**非 root 降级（不崩、不静默成功）**：
+
+- `nginx` 命令因权限被拒（内核回 `E_NEED_ROOT`，或直连 exec 输出含 `permission denied`）→ 返回 `E_NEED_ROOT`，
+  `detail.hint` 给出「以 root 启动 Kore，插件经通道执行」，插件进程不需要 root。
+- 写 vhost 失败且 `conf.d` **属主是 root、当前用户非 root** → 同样返回 `E_NEED_ROOT`，hint 给出目录授权动作
+  （`chgrp kore-site` + `chmod 2775`，或 `setfacl`）。属主不是 root 时权限失败**不**归因 root（保持 `E_INTERNAL`）：
+  root 也解决不了 DAC 位/只读挂载，误报会把人带偏。
+
+**写 vhost 为什么不在 root action 里**：ADR-0022 的 13 条受控命令没有文件写原语；ADR-0028 的受控文件写
+（`internal/core/filewrite`）一期白名单只有 sshd/sysctl/limits/logrotate 四个 drop-in 目录，**不含
+`/etc/nginx/conf.d`**，且尚未接线到 root-action 执行路径。把该代理指向前缀需要先改 ADR-0028 §3（复审条件 #1），
+属内核侧决策，本插件不自作主张。因此写路径的可行解法是文件系统授权（hint 已给出），或把 `host_conf_dir`
+指到插件可写目录并在宿主 `nginx.conf` 里自行 include。
+
+**未验证项**：本机以非 root 运行，只实测了「非 root 时返回 `E_NEED_ROOT` + hint + 不落半成品」
+（`tests/boundary/needroot_test.go`）。**root 下的成功路径（通道真实执行 `nginx -t`/`-s reload`）未在本机验证**，
+验证方式：以 root 启动 kore（插件仍以 `kore-site` 运行）→ 调用 `site.create` → 期望 `test_passed=true`、`reloaded=true`，
+并核对审计里出现 `kore-root-site-nginx-test` / `kore-root-site-nginx-reload` 两条记录；随后 `nginx -T` 的 dump 里应能看到该 vhost。
+
 ## 环境变量
 
 | 变量 | 必填 | 说明 |
@@ -142,7 +180,7 @@ KORE_HOST_CONF_DIR=/tmp/kore-site-cnf \
 
 ```bash
 make build   # CGO_ENABLED=0 GOAMD64=v1 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/site .
-make dist    # 产出 dist/site-0.4.4.tar.gz（info.json + bin/site + SHA256SUMS）与同名 .sha256
+make dist    # 产出 dist/site-0.5.0.tar.gz（info.json + bin/site + SHA256SUMS）与同名 .sha256
 make check   # gofmt → go vet → go test -timeout 200s
 ```
 
@@ -186,7 +224,7 @@ L2 反代后端是 `tests/e2e/testdata/backend`（`CGO_ENABLED=0` 静态二进�
 - **行为准则**：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 - **兼容性**：`protocol: kore.plugin.v1` · `requires_kore: >=0.1.0 <0.2.0` · `lifecycle: resident` · 深度等级 `production`。
 - **验证方式**：本地 `make check` 优先（CI 只在 push main / tag / PR / 手动跑；发布前 `make dist` 连跑两次核对 sha 一致）。
-- **发布产物**：`make dist` → `dist/site-0.4.4.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
+- **发布产物**：`make dist` → `dist/site-0.5.0.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
 - **相关仓库**：[索引 kore-plugins](https://github.com/kore-pl/kore-plugins) · [协议文档](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-PROTOCOL.md) · [SDK 指南](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-SDK.md)
 
 <!-- oss:end -->

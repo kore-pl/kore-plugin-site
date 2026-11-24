@@ -1,13 +1,43 @@
 {
   "id": "site",
   "name": "Nginx 站点管理插件",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "protocol": "kore.plugin.v1",
   "lifecycle": "resident",
   "depth_level": "production",
   "entry": "bin/site",
   "capabilities": [
     "system:admin"
+  ],
+  "root_actions": [
+    {
+      "id": "nginx-test",
+      "argv": [
+        "nginx",
+        "-t"
+      ],
+      "timeout_s": 20,
+      "description": "校验 nginx 配置语法（nginx -t）。降权后插件以 kore-site 运行，读 root 才能读的配置与私钥需要 root，故经内核提权通道执行"
+    },
+    {
+      "id": "nginx-reload",
+      "argv": [
+        "nginx",
+        "-s",
+        "reload"
+      ],
+      "timeout_s": 20,
+      "description": "热重载 nginx 配置（nginx -s reload）。给 root master 发信号需要 root；不提供 stop/quit——停服等于 Denial of Service"
+    },
+    {
+      "id": "nginx-dump",
+      "argv": [
+        "nginx",
+        "-T"
+      ],
+      "timeout_s": 20,
+      "description": "打印已加载的完整配置并校验语法（nginx -T，只读）。用于读取 /etc/nginx 下现有 vhost 的实际生效内容"
+    }
   ],
   "method_capabilities": {
     "site.list": "system:read",
@@ -46,5 +76,5 @@
     "web",
     "ops"
   ],
-  "size_bytes": 1613652
+  "size_bytes": 2934552
 }

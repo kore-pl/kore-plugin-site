@@ -58,10 +58,18 @@ func (s *vhostStore) ensureDir() error {
 // 避免「删除锁文件」与「另一实例 open 同一路径」之间的竞态。
 func (s *vhostStore) withManifestLock(fn func() *pluginapi.Error) *pluginapi.Error {
 	if err := s.ensureDir(); err != nil {
+		if perr := needRootForConfDir(s.dir, err); perr != nil {
+			return perr
+		}
 		return internalErr("创建 conf.d 目录失败: " + err.Error())
 	}
 	lockFile, err := os.OpenFile(s.manifestLockPath(), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
+		// 降权后的典型失败点：conf.d 属 root、插件是 kore-site ⇒ EACCES。
+		// 这里把「需要 root」翻译成 E_NEED_ROOT + 可操作提示，其余 FS 错误保持 E_INTERNAL。
+		if perr := needRootForConfDir(s.dir, err); perr != nil {
+			return perr
+		}
 		return internalErr("打开站点清单锁失败: " + err.Error())
 	}
 	defer func() { _ = lockFile.Close() }()

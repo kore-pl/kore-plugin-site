@@ -2,6 +2,36 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.5.0] - 2026-11-24
+
+### 新增
+
+- **声明 3 条 `root_actions`，修复「建站功能根本不可用」（P0）**：插件降权后以 `kore-site` 运行，
+  写 `/etc/nginx/conf.d`、`nginx -t`、`nginx -s reload` 都需要 root，此前**零声明**等于连申请通道都没有。
+  现按 ADR-0022 声明 `nginx-test`（`nginx -t`）、`nginx-reload`（`nginx -s reload`）、
+  `nginx-dump`（`nginx -T`）三条固定 argv，形状全部落在 `rootpolicy.go` 的 `nginx` 条目内，
+  且该形状**没有 Tail**——运行时追加任何参数都会被内核拒绝（`TestRootActionsRejectAppendedArgs`）。
+- **执行改走内核提权通道**：host 模式下 `nginx -t/-T/-s reload` 经内核 UDS 的
+  `POST /api/v1/plugins/site/root-action` 执行（`rootaction_client.go`，Bearer token，只允许调用本插件已声明动作），
+  不再由插件进程直连 `exec` 去撞权限；docker 模式不变（`docker exec … nginx` 在容器内执行）。
+- **非 root 降级（E_NEED_ROOT + 可操作提示，不崩）**：
+  - 命令因权限被拒（内核 `E_NEED_ROOT` 或直连输出 `permission denied`）→ `E_NEED_ROOT` + hint；
+  - 写 vhost 失败且 `conf.d` 属主是 root、当前用户非 root → `E_NEED_ROOT` + 目录授权 hint；
+  - 其余权限失败保持 `E_INTERNAL`（不把所有失败归因 root，`cf0cd25` 的 boundary 断言原样通过）。
+
+### 边界与未验证项
+
+- **写 vhost 仍未走提权通道**：ADR-0022 的 13 条受控命令没有文件写原语；ADR-0028 一期的受控写白名单
+  不含 `/etc/nginx/conf.d` 且尚未接线到 root-action。要真正以 root 写 `conf.d` 需内核侧先改 ADR-0028 §3（复审条件 #1）。
+  当前可行解：给插件用户目录写权限（hint 内已给出 `chgrp`/`chmod`/`setfacl` 具体命令），或把 `host_conf_dir`
+  指向插件可写目录并由宿主 `nginx.conf` include。
+- **root 下的通道成功路径未在本机验证**（本机非 root）：只实测了非 root 的 `E_NEED_ROOT` 路径
+  （`tests/boundary/needroot_test.go`，实测输出见发版证据）。验证方式见 README「权限模型」末段。
+- 新增单测：声明双向一致（`TestRootActionsDeclared`）、形状无停服语句（`TestRootActionsReadOnlyShape`）、
+  追加参数被拒（`TestRootActionsRejectAppendedArgs`）、通道优先与 id 对齐（`TestHostRunnerUsesPrivilegeChannel`）、
+  `E_NEED_ROOT` 结构化升级（`TestNeedRootFromChannel`）、非权限错误不误归因（`TestOtherChannelErrorsNotAttributedToRoot`）。
+- 版本 0.4.4 → 0.5.0；manifest.json 同步。
+
 ## [0.4.4] - 2026-11-24
 
 ### 修复

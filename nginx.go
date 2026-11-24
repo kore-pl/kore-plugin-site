@@ -55,6 +55,12 @@ type nginxRunner struct {
 	mode      string
 	reason    string
 	container string
+	// channel 是内核 root-action 通道（host 模式专用）；nil 表示通道不可用。
+	//
+	// 为什么 host 模式优先走通道：插件降权后以 kore-site 运行，`nginx -s reload` 要给
+	// root master 发信号、`nginx -t`/`-T` 要读 root 才能读的配置——直连 exec 必然 EACCES。
+	// docker 模式不走通道：命令是 `docker exec …`，在容器内以容器用户执行，与宿主 root 无关。
+	channel rootActionFunc
 }
 
 // status 返回结果里统一披露的命令层模式与跳过原因。
@@ -237,14 +243,72 @@ type commandOutcome struct {
 	ran    bool
 }
 
-// runTest 执行固定 argv 的配置校验。
-func (r *nginxRunner) runTest() commandOutcome { return runCommand(r.test, "-t") }
+// runTest 执行配置校验（host 模式优先经内核提权通道）。
+func (r *nginxRunner) runTest() commandOutcome {
+	return r.run(rootActionNginxTest, r.test, "-t")
+}
 
-// runReload 执行固定 argv 的热重载。
-func (r *nginxRunner) runReload() commandOutcome { return runCommand(r.reload, "-s", "reload") }
+// runReload 执行热重载（host 模式优先经内核提权通道）。
+func (r *nginxRunner) runReload() commandOutcome {
+	return r.run(rootActionNginxReload, r.reload, "-s", "reload")
+}
 
-// runDump 执行固定 argv 的已加载配置转储。
-func (r *nginxRunner) runDump() commandOutcome { return runCommand(r.dump, "-T") }
+// runDump 转储已加载配置（host 模式优先经内核提权通道）。
+func (r *nginxRunner) runDump() commandOutcome {
+	return r.run(rootActionNginxDump, r.dump, "-T")
+}
+
+// run 是三条命令的唯一分派点：通道可用且 host 模式 → 通道执行；否则直连 exec。
+//
+// 通道优先而不是「先直连、失败再重试通道」：降权进程直连 reload 会真的向 master
+// 发信号失败并留下一条噪声错误，而判定「是否走通道」只依赖环境变量是否齐备，
+// 不需要一次失败的尝试来试探。
+func (r *nginxRunner) run(actionID string, spec commandSpec, fixed ...string) commandOutcome {
+	if spec.disabled {
+		return commandOutcome{ran: false}
+	}
+	if r.channel != nil && r.mode == nginxModeHost {
+		return runViaRootAction(r.channel, actionID)
+	}
+	return runCommand(spec, fixed...)
+}
+
+// runViaRootAction 经内核通道执行一条声明过的固定动作，并把结果归一成 commandOutcome。
+//
+// 输出顺序：先 stdout 后 stderr——与 CombinedOutput 的「不保证顺序」相比，这里
+// 顺序稳定，`nginx -t` 的 "syntax is ok" / "test is successful" 仍在同一串里可解析。
+func runViaRootAction(channel rootActionFunc, actionID string) commandOutcome {
+	out, err := channel(actionID)
+	if err != nil {
+		// 通道错误（含内核 E_NEED_ROOT / E_INVALID / 审计拒绝）原样保留，
+		// 由 outcome.needRoot 做结构化归因；错误文案同时作为可诊断输出。
+		return commandOutcome{output: err.Error(), err: err, ran: true}
+	}
+	combined := out.Stdout + out.Stderr
+	if out.ExitCode != 0 {
+		return commandOutcome{
+			output: combined,
+			err:    fmt.Errorf("命令退出码 %d（内核 root-action %s）", out.ExitCode, actionID),
+			ran:    true,
+		}
+	}
+	return commandOutcome{output: combined, ran: true}
+}
+
+// needRoot 报告该命令失败是否**因为缺宿主 root 权限**。
+//
+// 两条判据：① 内核通道明确回 E_NEED_ROOT（结构化，最准）；
+// ② 直连 exec 的输出里出现权限被拒的判据（降权插件直连 nginx 的典型后果）。
+// 第二条只在通道不可用时才有意义——通道可用时错误一定来自判据 ①。
+func (o commandOutcome) needRoot() bool {
+	if o.err == nil {
+		return false
+	}
+	if isNeedRootFailure(o.err) {
+		return true
+	}
+	return looksLikePermissionDenied(o.output + " " + o.err.Error())
+}
 
 // runCommand 以固定 argv 执行命令：不经过 shell，不拼接任何 RPC 入参。
 func runCommand(spec commandSpec, fixed ...string) commandOutcome {

@@ -71,6 +71,9 @@ func (s *siteService) applyEdit(domain string, mutate func(*siteState) *pluginap
 		return applyResult{}, st, perr
 	}
 	if err := atomicWrite(path, content); err != nil {
+		if perr := needRootForConfDir(s.store.dir, err); perr != nil {
+			return applyResult{}, st, perr
+		}
 		return applyResult{}, st, internalErr("写入 vhost 失败: " + err.Error())
 	}
 
@@ -80,6 +83,9 @@ func (s *siteService) applyEdit(domain string, mutate func(*siteState) *pluginap
 			return applyResult{}, st, internalErr(fmt.Sprintf(
 				"nginx 配置校验失败且回滚失败: %v；校验输出: %s", rbErr, describeCommand(testOutcome)))
 		}
+		if perr := needRootCommandErr(testOutcome, "nginx 配置校验"); perr != nil {
+			return applyResult{}, st, perr
+		}
 		return applyResult{}, st, invalidParam("nginx 配置校验失败，已回滚: " + describeCommand(testOutcome))
 	}
 
@@ -88,6 +94,9 @@ func (s *siteService) applyEdit(domain string, mutate func(*siteState) *pluginap
 		if rbErr := snap.restore(); rbErr != nil {
 			return applyResult{}, st, internalErr(fmt.Sprintf(
 				"nginx 重载失败且回滚失败: %v；重载输出: %s", rbErr, describeCommand(reloadOutcome)))
+		}
+		if perr := needRootCommandErr(reloadOutcome, "nginx 重载"); perr != nil {
+			return applyResult{}, st, perr
 		}
 		return applyResult{}, st, &pluginapi.Error{
 			Code:    pluginapi.E_UPSTREAM,

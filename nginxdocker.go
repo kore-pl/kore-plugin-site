@@ -73,6 +73,11 @@ func hostRunner(settings pluginSettings) (*nginxRunner, pluginSettings, error) {
 		runner.mode = nginxModeDocker
 		runner.container = container
 	}
+	// 只有真正的宿主 nginx 才走提权通道：显式前缀已是 `docker exec … nginx` 时
+	// 命令在容器内执行，宿主 root 与之无关，通道只会让错误归因错位。
+	if runner.mode == nginxModeHost {
+		runner.channel = rootActionFuncFromEnv()
+	}
 	runner.reason = disabledReason(testSpec, reloadSpec, dumpSpec)
 	return runner, settings, nil
 }

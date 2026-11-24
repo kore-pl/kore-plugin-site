@@ -294,6 +294,9 @@ func (s *siteService) setPassword(p sitePasswordParams) (sitePasswordResult, *pl
 	salt := randomSalt()
 	entry := username + ":" + apr1Crypt(p.Password, salt) + "\n"
 	if err := writeAuthFile(file, entry); err != nil {
+		if perr := needRootForConfDir(s.store.dir, err); perr != nil {
+			return sitePasswordResult{}, perr
+		}
 		return sitePasswordResult{}, internalErr("写入密码文件失败: " + err.Error())
 	}
 	restoreAuth := func() {
