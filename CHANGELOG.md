@@ -2,6 +2,17 @@
 
 本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.8.2] - 2026-11-25
+
+### 修复
+
+- **补 `requires_root: true`（协议 §3.1.3 / ADR-0018）**：`info.json` 声明了 5 条
+  `root_actions` 却缺顶层 `requires_root: true`，内核 `registry.validateRootActions`
+  在安装期直接回 `E_INVALID`（原文「声明了 root_actions 必须同时设置 requires_root:true」），
+  导致 `site@0.8.1` 在线升级 400、本地仍停在 0.4.4。本次仅补这一个顶层布尔字段，
+  不动任何 action 的 argv / target / 形状（逐条仍过 `pluginapi.ValidateRootAction`），
+  版本 bump 0.8.1 → 0.8.2（`manifest.json` 同步），同 `id@version` 唯一 sha 不受影响。
+
 ## [0.8.1] - 2026-11-24
 
 ### 变更

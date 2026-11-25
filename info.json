@@ -1,7 +1,7 @@
 {
   "id": "site",
   "name": "Nginx 站点管理插件",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "protocol": "kore.plugin.v1",
   "lifecycle": "resident",
   "depth_level": "production",
@@ -9,6 +9,7 @@
   "capabilities": [
     "system:admin"
   ],
+  "requires_root": true,
   "root_actions": [
     {
       "id": "nginx-test",
@@ -100,5 +101,5 @@
     "web",
     "ops"
   ],
-  "size_bytes": 2955575
+  "size_bytes": 2955583
 }
