@@ -1,5 +1,7 @@
 # kore-plugin-site
 
+语言：[简体中文](docs/DETAIL.md) · [English](docs/DETAIL.en.md) · [Español](docs/DETAIL.es.md) · [Français](docs/DETAIL.fr.md) · [Deutsch](docs/DETAIL.de.md) · [Русский](docs/DETAIL.ru.md) · [Português](docs/DETAIL.pt.md)
+
 kore 的 **M2 站点管理插件**（nginx 站点生命周期）。`info.json.depth_level = "production"`。
 
 ## 定位与边界
@@ -247,5 +249,9 @@ L2 反代后端是 `tests/e2e/testdata/backend`（`CGO_ENABLED=0` 静态二进�
 - **验证方式**：本地 `make check` 优先（GitHub CI 只手动触发，Gitea CI 按版本 tag 触发；发布前 `make dist` 连跑两次核对 sha 一致）。
 - **发布产物**：`make dist` → `dist/site-0.8.2.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
 - **相关仓库**：[索引 kore-plugins](https://github.com/kore-pl/kore-plugins) · [协议文档](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-PROTOCOL.md) · [SDK 指南](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-SDK.md)
+
+
+
+如果你觉得这个插件有用，欢迎给仓库点个 ⭐ Star —— 你的支持是持续维护的动力。
 
 <!-- oss:end -->
