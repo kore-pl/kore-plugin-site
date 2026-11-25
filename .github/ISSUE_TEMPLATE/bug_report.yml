@@ -14,7 +14,7 @@ body:
     attributes:
       label: 插件版本
       description: 本插件 `info.json.version`，或 `dist/` 产物文件名里的版本号。
-      placeholder: "0.3.1"
+      placeholder: "0.8.1"
     validations:
       required: true
 
@@ -22,7 +22,7 @@ body:
     id: kore-version
     attributes:
       label: kore 版本
-      description: 主壳版本（`kored version` 输出）；本插件声明的 `requires_kore` 为 `>=0.1.0 <0.2.0`。
+      description: 主壳版本（`kored version` 输出）；本插件声明的 `requires_kore` 为 `>=0.1.1 <0.2.0`。
       placeholder: "0.1.0"
     validations:
       required: true
