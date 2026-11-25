@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Nginx 站点管理插件",
+    "description": "kore 的站点生命周期插件：原子写 vhost、nginx -t 校验与 reload、失败回滚；支持 SSL、伪静态、反代、重定向、PHP-FPM 与流量统计。",
+    "detail": "docs/DETAIL.md"
+  }
+}

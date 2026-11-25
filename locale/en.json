@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Nginx Site Management Plugin",
+    "description": "kore's site lifecycle plugin: atomic vhost writes, nginx -t validation and reload with rollback on failure; supports SSL, rewrites, reverse proxy, redirects, PHP-FPM and traffic statistics.",
+    "detail": "docs/DETAIL.en.md"
+  }
+}

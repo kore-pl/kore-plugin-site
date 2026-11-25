@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Nginx-Site-Verwaltungsplugin",
+    "description": "kores Plugin für den Site-Lebenszyklus: atomische vhost-Schreibvorgänge, nginx -t-Prüfung und Reload mit Rollback bei Fehlern; unterstützt SSL, Rewrites, Reverse Proxy, Weiterleitungen, PHP-FPM und Traffic-Statistiken.",
+    "detail": "docs/DETAIL.de.md"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Complemento de gestión de sitios Nginx",
+    "description": "Plugin de ciclo de vida de sitios de kore: escritura atómica de vhost, validación con nginx -t y recarga con reversión ante fallos; admite SSL, reescrituras, proxy inverso, redirecciones, PHP-FPM y estadísticas de tráfico.",
+    "detail": "docs/DETAIL.es.md"
+  }
+}
