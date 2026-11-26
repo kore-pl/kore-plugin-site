@@ -2,6 +2,7 @@ package boundary
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,9 +41,23 @@ func TestBoundaryNeedRootWhenConfDirRootOwned(t *testing.T) {
 	if !info.IsDir() {
 		t.Skipf("%s 不是目录", confDir)
 	}
-	if probeErr := os.WriteFile(filepath.Join(confDir, ".kore-site-probe"), []byte("x"), 0o600); probeErr == nil {
-		_ = os.Remove(filepath.Join(confDir, ".kore-site-probe"))
+	probePath := filepath.Join(confDir, ".kore-site-probe")
+	probeErr := os.WriteFile(probePath, []byte("x"), 0o600)
+	if probeErr == nil {
+		_ = os.Remove(probePath)
 		t.Skipf("%s 对当前用户可写（可能以 root 运行），测不了权限降级", confDir)
+	}
+	// 本用例验证的是「conf.d 属 root 且 DAC 拒绝写（EACCES）→ E_NEED_ROOT」这条
+	// 降级分支。插件把 EACCES 翻译成 E_NEED_ROOT，但只读挂载返回的是 EROFS，
+	// 走的是 E_INTERNAL 分支（needRootForConfDir 只在 fs.ErrPermission 时升级）。
+	// 沙箱（bwrap）把 /etc 挂在只读 FS 上时，这里会得到 EROFS 而非 EACCES——
+	// 这是环境假阴性，不是产品缺陷：必须显式 Skip 并说明原因，不能把它当成
+	// "测通了"；正常 Linux 的 /etc 可写探测得到 EACCES，下面仍真实验证 NEED_ROOT。
+	// 该降级的判定分支另由 rootaction_channel_test.go 的
+	// TestNeedRootForConfDirDecision（可注入 euid/属主）与 TestNeedRootFromChannel
+	// 独立覆盖，故 Skip 不丢覆盖。
+	if !errors.Is(probeErr, os.ErrPermission) {
+		t.Skipf("%s 不可写但原因不是权限拒绝（probeErr=%v）；只读挂载（EROFS）下插件按设计报 E_INTERNAL 而非 E_NEED_ROOT，此处造不出 EACCES，属环境限制而非产品缺陷，Skip", confDir, probeErr)
 	}
 
 	const domain = "needroot-boundary.example.com"
